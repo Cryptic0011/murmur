@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.xcuserdatad/
+
+# SPM
+.swiftpm/
+.build/
+Packages/
+Package.resolved
+
+# IDE
+.vscode/
+.idea/
+
+# Worktrees
+.worktrees/
+
+# Secrets
+*.env
+secrets/

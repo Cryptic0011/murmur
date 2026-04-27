@@ -1,0 +1,66 @@
+name: Murmur
+packages:
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    from: "0.18.0"
+options:
+  bundleIdPrefix: com.murmur
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    MURMUR_UPDATE_REPOSITORY: Cryptic0011/murmur
+    MURMUR_UPDATE_RELEASES_PAGE_URL: https://github.com/Cryptic0011/murmur/releases
+    MURMUR_UPDATE_CHECK_INTERVAL_HOURS: "12"
+    ENABLE_HARDENED_RUNTIME: YES
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+targets:
+  Murmur:
+    type: application
+    platform: macOS
+    sources:
+      - path: Murmur
+        excludes:
+          - AppIcon.icns
+    dependencies:
+      - package: WhisperKit
+    info:
+      path: Murmur/Info.plist
+      properties:
+        LSUIElement: true
+        NSMicrophoneUsageDescription: "Murmur listens to your voice while you hold the dictation hotkey, transcribes it locally, and pastes the cleaned text where you're typing."
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        MurmurUpdateRepository: "$(MURMUR_UPDATE_REPOSITORY)"
+        MurmurUpdateReleasesPageURL: "$(MURMUR_UPDATE_RELEASES_PAGE_URL)"
+        MurmurUpdateCheckIntervalHours: "$(MURMUR_UPDATE_CHECK_INTERVAL_HOURS)"
+    entitlements:
+      path: Murmur/Murmur.entitlements
+      properties:
+        com.apple.security.device.audio-input: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.murmur.Murmur
+  MurmurTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MurmurTests
+    info:
+      path: MurmurTests/Info.plist
+    dependencies:
+      - target: Murmur
+schemes:
+  Murmur:
+    build:
+      targets:
+        Murmur: all
+        MurmurTests: [test]
+    test:
+      targets:
+        - MurmurTests
