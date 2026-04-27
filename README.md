@@ -29,10 +29,10 @@ Murmur is a macOS menu bar app for fast voice dictation. Hold your hotkey, speak
 
 ### Option 1: Download the latest DMG
 
-Use the latest stable download link:
+Open the releases page and download `Murmur.dmg` from the latest published release:
 
 ```text
-https://github.com/Cryptic0011/murmur/releases/latest/download/Murmur.dmg
+https://github.com/Cryptic0011/murmur/releases
 ```
 
 Install steps:
