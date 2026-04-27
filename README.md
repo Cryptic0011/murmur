@@ -6,6 +6,10 @@
 
 <p align="center">Push-to-talk dictation for macOS with visible transcription, cleanup, and paste feedback.</p>
 
+<p align="center">
+  <a href="https://murmur.builtbyflux.com">murmur.builtbyflux.com</a>
+</p>
+
 Murmur is a macOS menu bar app for fast voice dictation. Hold your hotkey, speak naturally, and Murmur records, transcribes, optionally cleans the text, then pastes it into the active app. It is designed to be usable with fully local models, API-backed models, or a mix of both.
 
 ## Features
