@@ -3,6 +3,7 @@
 
 # Xcode
 build/
+dist/
 DerivedData/
 *.pbxuser
 *.mode1v3

@@ -247,54 +247,6 @@ Run tests:
 xcodebuild test -scheme Murmur -destination 'platform=macOS'
 ```
 
-## Releases
-
-Interactive all-in-one release flow:
-
-```bash
-./scripts/release-interactive.sh
-```
-
-The release script walks you through:
-
-1. Choose the release version and build number
-2. Optionally run the test suite
-3. Commit release app paths only
-4. Push the current branch
-5. Switch to `main`, pull latest, and merge if needed
-6. Create and push an annotated tag like `v0.2.0`
-7. Build `dist/Murmur.dmg`
-8. Create or update the GitHub Release
-9. Upload both `dist/Murmur.dmg` and `dist/Murmur-vX.Y.Z.dmg`
-
-To safely test the prompts without publishing anything, run the script and answer `N` to build, commit, push, tag-from-main, upload release, and final proceed prompts.
-
-The script stages only app release paths:
-
-- `project.yml`
-- `Murmur`
-- `MurmurTests`
-- `Murmur.xcodeproj`
-- `scripts`
-
-Unrelated files such as `.DS_Store`, local browser artifacts, generated landing assets, and sibling worktree files are left alone. If those files would block `git pull` or `git switch`, the script asks to temporarily stash and restore them.
-
-Supporting scripts:
-
-```bash
-./scripts/bump-version.sh 0.2.0
-./scripts/build-release-dmg.sh
-```
-
-For signed or notarized DMGs, set these optional environment variables before running the build or release script:
-
-```bash
-export MURMUR_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-export MURMUR_NOTARY_PROFILE="murmur-notary"
-```
-
-Full release notes are documented in [docs/release.md](docs/release.md).
-
 ## Repository Docs
 
 - Design spec: [docs/superpowers/specs/2026-04-13-voice-dictation-design.md](docs/superpowers/specs/2026-04-13-voice-dictation-design.md)
