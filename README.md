@@ -1,9 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="Murmur/Assets.xcassets/MurmurMark.imageset/murmur-mark-light.png">
-    <source media="(prefers-color-scheme: light)" srcset="Murmur/Assets.xcassets/MurmurMark.imageset/murmur-mark-dark.png">
-    <img src="Murmur/Assets.xcassets/MurmurMark.imageset/murmur-mark-dark.png" alt="Murmur logo" width="140">
-  </picture>
+  <img src="Murmur/Resources/AppIcon.iconset/icon_512x512@2x.png" alt="Murmur app icon" width="160">
 </p>
 
 <h1 align="center">Murmur</h1>
