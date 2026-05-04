@@ -18,7 +18,7 @@ struct SettingsStoreTests {
         #expect(s.transcriptionProvider == .whisperLocal)
         #expect(s.primaryCleanupProvider == .groqAPI)
         #expect(s.secondaryCleanupProvider == CleanupProviderOption.defaultFallback)
-        #expect(s.saveHistory == true)
+        #expect(s.saveHistory == false)
         #expect(s.appOverrides.isEmpty)
         #expect(s.whisperModel == "openai_whisper-small.en")
         #expect(s.groqTranscriptionModel == "whisper-large-v3-turbo")

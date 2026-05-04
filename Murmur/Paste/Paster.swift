@@ -27,7 +27,6 @@ final class Paster {
 
     func paste(_ text: String) async -> PasteOutcome {
         let pb = NSPasteboard.general
-        let priorChange = pb.changeCount
         let priorContents = pb.pasteboardItems?.compactMap { item -> [NSPasteboard.PasteboardType: Data]? in
             var dict: [NSPasteboard.PasteboardType: Data] = [:]
             for type in item.types {
@@ -41,17 +40,23 @@ final class Paster {
         item.setString(text, forType: .string)
         item.setString("Murmur", forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
         pb.writeObjects([item])
+        let murmurPasteboardChange = pb.changeCount
 
-        guard let target = focusedEditableElementDescription() else {
+        guard let target = focusedEditableTarget() else {
             log.info("Paste fallback to clipboard: no editable focused element")
             return .copiedOnly("Copied to clipboard — no editable field was focused")
         }
 
         sendCmdV()
-        log.info("Paste injected into focused element: \(target, privacy: .public)")
+        log.info("Paste injected into focused element: \(target.description, privacy: .public)")
 
         try? await Task.sleep(nanoseconds: restoreDelay)
-        if pb.changeCount == priorChange + 1 {
+        guard pasteWasConfirmed(into: target, insertedText: text) else {
+            log.info("Paste could not be confirmed; leaving dictated text on clipboard")
+            return .copiedOnly("Paste attempted — text remains on clipboard for manual paste")
+        }
+
+        if pb.changeCount == murmurPasteboardChange {
             pb.clearContents()
             let restored: [NSPasteboardItem] = priorContents.map { dict in
                 let it = NSPasteboardItem()
@@ -60,7 +65,7 @@ final class Paster {
             }
             if !restored.isEmpty { pb.writeObjects(restored) }
         }
-        return .pasted(target)
+        return .pasted(target.description)
     }
 
     private func sendCmdV() {
@@ -73,22 +78,61 @@ final class Paster {
         up?.post(tap: .cgAnnotatedSessionEventTap)
     }
 
-    private func focusedEditableElementDescription() -> String? {
+    private struct PasteTarget {
+        let element: AXUIElement
+        let description: String
+        let valueBeforePaste: String?
+    }
+
+    private func focusedEditableTarget() -> PasteTarget? {
         let systemWide = AXUIElementCreateSystemWide()
         var focused: AnyObject?
         let err = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focused)
         guard err == .success, let focused else { return nil }
+        guard CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
         let element = focused as! AXUIElement
+        guard let editable = findEditableElement(startingAt: element, maxDepth: 4) else { return nil }
+        let role = stringAttribute(kAXRoleAttribute, of: editable) ?? "Unknown"
+        let subrole = stringAttribute(kAXSubroleAttribute, of: editable)
+        let description: String
+        if let subrole, !subrole.isEmpty {
+            description = "\(role) • \(subrole)"
+        } else {
+            description = role
+        }
+        return PasteTarget(
+            element: editable,
+            description: description,
+            valueBeforePaste: stringAttribute(kAXValueAttribute, of: editable)
+        )
+    }
+
+    private func findEditableElement(startingAt element: AXUIElement, maxDepth: Int) -> AXUIElement? {
         let role = stringAttribute(kAXRoleAttribute, of: element) ?? "Unknown"
         let subrole = stringAttribute(kAXSubroleAttribute, of: element)
-        guard isEditable(element, role: role, subrole: subrole) else { return nil }
-        if let subrole, !subrole.isEmpty {
-            return "\(role) • \(subrole)"
+        if isEditable(element, role: role, subrole: subrole) {
+            return element
         }
-        return role
+        guard maxDepth > 0 else { return nil }
+
+        let childAttributes = [
+            kAXFocusedUIElementAttribute as String,
+            kAXSelectedChildrenAttribute as String,
+            kAXChildrenAttribute as String,
+            "AXContents",
+        ]
+        for attribute in childAttributes {
+            for child in elementsAttribute(attribute, of: element) {
+                if let editable = findEditableElement(startingAt: child, maxDepth: maxDepth - 1) {
+                    return editable
+                }
+            }
+        }
+        return nil
     }
 
     private func isEditable(_ element: AXUIElement, role: String, subrole: String?) -> Bool {
+        if boolAttribute("AXProtectedContent", of: element) == true { return false }
         let directRoles = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXTextView"]
         if directRoles.contains(role) { return true }
         if subrole == "AXContentEditable" || subrole == "AXTextField" { return true }
@@ -102,6 +146,14 @@ final class Paster {
         return false
     }
 
+    private func pasteWasConfirmed(into target: PasteTarget, insertedText text: String) -> Bool {
+        guard let valueBeforePaste = target.valueBeforePaste,
+              let valueAfterPaste = stringAttribute(kAXValueAttribute, of: target.element)
+        else { return false }
+        guard valueAfterPaste != valueBeforePaste else { return false }
+        return valueAfterPaste.contains(text) || valueAfterPaste.count >= valueBeforePaste.count + min(text.count, 1)
+    }
+
     private func stringAttribute(_ name: String, of element: AXUIElement) -> String? {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
@@ -112,5 +164,21 @@ final class Paster {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
         return value as? Bool
+    }
+
+    private func elementsAttribute(_ name: String, of element: AXUIElement) -> [AXUIElement] {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return [] }
+        if CFGetTypeID(value) == AXUIElementGetTypeID() {
+            return [value as! AXUIElement]
+        }
+        if let elements = value as? [AXUIElement] { return elements }
+        if let objects = value as? [AnyObject] {
+            return objects.compactMap { object in
+                guard CFGetTypeID(object) == AXUIElementGetTypeID() else { return nil }
+                return object as! AXUIElement
+            }
+        }
+        return []
     }
 }

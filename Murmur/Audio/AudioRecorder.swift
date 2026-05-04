@@ -28,33 +28,30 @@ actor AudioRecorder {
     private var limitTriggered = false
     private var tapInstalled = false
     private var defaultDeviceListenerInstalled = false
-    private var preferredDeviceUID: String?
     var onLimitReached: (@Sendable () -> Void)?
 
     func setOnLimitReached(_ callback: (@Sendable () -> Void)?) {
         onLimitReached = callback
     }
 
-    func start(maxSeconds: Int, preferredDeviceUID: String? = nil) throws {
+    func start(maxSeconds: Int) throws {
         self.maxSeconds = maxSeconds
         self.buffer = AudioBuffer(maxSamples: Int(sampleRate) * maxSeconds)
         self.liveLevel = 0
         self.limitTriggered = false
         self.isRecording = false
-        self.preferredDeviceUID = preferredDeviceUID
 
         installDefaultDeviceListenerIfNeeded()
 
-        let shouldForcePreferredDevice = !Self.isBluetoothInput(Self.preferredInputDeviceID(preferredDeviceUID: preferredDeviceUID))
         do {
-            try startEngineForCurrentDevice(overrideDevice: shouldForcePreferredDevice)
+            try startEngineForCurrentDefaultDevice()
         } catch {
-            log.error("Mic start (preferred device) failed: \(String(describing: error), privacy: .public)")
+            log.error("Mic start (system default) failed: \(String(describing: error), privacy: .public)")
             resetEngineHard()
             do {
                 try startEngineForCurrentDevice(overrideDevice: false)
             } catch {
-                log.error("Mic start (default device) failed: \(String(describing: error), privacy: .public)")
+                log.error("Mic start (input node default) failed: \(String(describing: error), privacy: .public)")
                 resetEngineHard()
                 do {
                     try startEngineForDevice(Self.builtInInputDeviceID())
@@ -65,6 +62,14 @@ actor AudioRecorder {
             }
         }
         isRecording = true
+    }
+
+    private func startEngineForCurrentDefaultDevice() throws {
+        guard var deviceID = AudioInputDeviceManager.systemDefaultInputDeviceID() else {
+            try startEngineForCurrentDevice(overrideDevice: false)
+            return
+        }
+        try startEngineForCurrentDevice(overrideDevice: false, forcedDeviceID: &deviceID)
     }
 
     private func startEngineForDevice(_ deviceID: AudioDeviceID?) throws {
@@ -177,8 +182,7 @@ actor AudioRecorder {
     }
 
     private func applyCurrentInputDevice() {
-        guard let audioUnit = engine.inputNode.audioUnit else { return }
-        guard var deviceID = Self.preferredInputDeviceID(preferredDeviceUID: preferredDeviceUID) else { return }
+        guard var deviceID = AudioInputDeviceManager.systemDefaultInputDeviceID() else { return }
         applyInputDevice(&deviceID)
     }
 
@@ -192,31 +196,6 @@ actor AudioRecorder {
             deviceID,
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
-    }
-
-    private static func preferredInputDeviceID(preferredDeviceUID: String?) -> AudioDeviceID? {
-        if let preferredDeviceUID,
-           let deviceID = AudioInputDeviceManager.deviceID(forUID: preferredDeviceUID)
-        {
-            return deviceID
-        }
-        return AudioInputDeviceManager.systemDefaultInputDeviceID()
-    }
-
-    private static func isBluetoothInput(_ deviceID: AudioDeviceID?) -> Bool {
-        guard let deviceID else { return false }
-        var transport: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyTransportType,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transport)
-        guard status == noErr else { return false }
-        return transport == kAudioDeviceTransportTypeBluetooth ||
-               transport == kAudioDeviceTransportTypeBluetoothLE ||
-               transport == kAudioDeviceTransportTypeAirPlay
     }
 
     private static func builtInInputDeviceID() -> AudioDeviceID? {
@@ -296,7 +275,7 @@ actor AudioRecorder {
         }
 
         do {
-            try startEngineForCurrentDevice(overrideDevice: false)
+            try startEngineForCurrentDefaultDevice()
             isRecording = true
         } catch {
             resetEngineHard()

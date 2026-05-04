@@ -9,11 +9,16 @@ struct HistoryTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            MurmurCard(title: "Saved History", subtitle: "Keep dictations locally for review and debugging.") {
-                Toggle("Save dictation history", isOn: Binding(
-                    get: { settings.saveHistory },
-                    set: { settings.saveHistory = $0 }
-                ))
+            MurmurCard(title: "Saved History", subtitle: "History is off by default because dictations can contain private text.") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Save dictation history", isOn: Binding(
+                        get: { settings.saveHistory },
+                        set: { settings.saveHistory = $0 }
+                    ))
+                    Text("When enabled, Murmur saves raw transcripts, cleaned text, app names, and paste outcomes locally.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             MurmurCard(title: "Entries", subtitle: "Each row includes the cleanup result and final paste path.") {

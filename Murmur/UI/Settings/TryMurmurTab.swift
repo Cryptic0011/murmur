@@ -28,17 +28,10 @@ struct TryMurmurTab: View {
     }
 
     private var currentMicrophoneText: String {
-        guard let uid = settings.microphoneDeviceUID else {
-            if let device = audioDevices.first(where: \.isSystemDefault) {
-                return "\(device.name) · System Default"
-            }
-            return "System Default"
+        if let device = audioDevices.first(where: \.isSystemDefault) {
+            return "\(device.name) · System Default"
         }
-
-        if let device = audioDevices.first(where: { $0.uid == uid }) {
-            return "\(device.name) · Pinned"
-        }
-        return "Selected microphone is disconnected"
+        return "System Default"
     }
 
     var body: some View {
@@ -95,16 +88,6 @@ struct TryMurmurTab: View {
     private var microphoneCard: some View {
         MurmurCard(title: "Microphone Test", subtitle: currentMicrophoneText) {
             VStack(alignment: .leading, spacing: 14) {
-                Picker("", selection: microphoneSelection) {
-                    Text("Follow System Default").tag("")
-                    Divider()
-                    ForEach(audioDevices) { device in
-                        Text("\(device.displayName) · \(device.transport)").tag(device.uid)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-
                 HStack(spacing: 10) {
                     meter(level: micLevel)
                     Button(isTestingMic ? "Stop" : "Start Test") {
@@ -267,19 +250,6 @@ struct TryMurmurTab: View {
         }
     }
 
-    private var microphoneSelection: Binding<String> {
-        Binding(
-            get: { settings.microphoneDeviceUID ?? "" },
-            set: { newValue in
-                settings.microphoneDeviceUID = newValue.isEmpty ? nil : newValue
-                if isTestingMic {
-                    stopMicTest()
-                }
-                refreshAudioDevices()
-            }
-        )
-    }
-
     private func readinessRow(
         title: String,
         value: String,
@@ -316,10 +286,9 @@ struct TryMurmurTab: View {
         isTestingMic = true
 
         let recorder = recorder
-        let preferredUID = settings.microphoneDeviceUID
         meterTask = Task { @MainActor in
             do {
-                try await recorder.start(maxSeconds: 30, preferredDeviceUID: preferredUID)
+                try await recorder.start(maxSeconds: 30)
                 while !Task.isCancelled {
                     micLevel = await recorder.currentLevel()
                     try? await Task.sleep(nanoseconds: 50_000_000)
@@ -355,10 +324,9 @@ struct TryMurmurTab: View {
         isRecordingDictation = true
 
         let recorder = dictationRecorder
-        let preferredUID = settings.microphoneDeviceUID
         dictationTask = Task { @MainActor in
             do {
-                try await recorder.start(maxSeconds: 15, preferredDeviceUID: preferredUID)
+                try await recorder.start(maxSeconds: 15)
             } catch {
                 dictationError = "Could not start recording: \(error.localizedDescription)"
                 dictationStatus = "Recording failed."

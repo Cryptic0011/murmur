@@ -168,7 +168,7 @@ final class SettingsStore: ObservableObject {
     }
 
     var saveHistory: Bool {
-        get { (defaults.object(forKey: Key.saveHistory) as? Bool) ?? true }
+        get { (defaults.object(forKey: Key.saveHistory) as? Bool) ?? false }
         set { defaults.set(newValue, forKey: Key.saveHistory); notifyChanged() }
     }
 

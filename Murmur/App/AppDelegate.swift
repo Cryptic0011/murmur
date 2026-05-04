@@ -109,8 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             do {
                 try await recorder.start(
-                    maxSeconds: settings.maxRecordingSeconds,
-                    preferredDeviceUID: settings.microphoneDeviceUID
+                    maxSeconds: settings.maxRecordingSeconds
                 )
                 guard recordingSessionID == sessionID else {
                     _ = await recorder.stop()

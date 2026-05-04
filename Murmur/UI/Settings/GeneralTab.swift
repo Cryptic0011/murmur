@@ -45,11 +45,11 @@ struct GeneralTab: View {
                 }
             }
 
-            MurmurCard(title: "Microphone", subtitle: "Follow the Mac input or pin Murmur to a specific mic.") {
+            MurmurCard(title: "Microphone", subtitle: "Murmur follows the Mac's current system input.") {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(alignment: .top, spacing: 14) {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Input source")
+                            Text("System input")
                                 .font(.system(size: 13, weight: .bold, design: .rounded))
                             Text(microphoneDetailText)
                                 .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -58,16 +58,6 @@ struct GeneralTab: View {
                         Spacer()
                         Button("Refresh") { refreshAudioDevices() }
                     }
-
-                    Picker("", selection: microphoneSelection) {
-                        Text("Follow System Default").tag("")
-                        Divider()
-                        ForEach(audioDevices) { device in
-                            Text("\(device.displayName) · \(device.transport)").tag(device.uid)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 10) {
@@ -143,6 +133,9 @@ struct GeneralTab: View {
                         get: { settings.saveHistory },
                         set: { settings.saveHistory = $0 }
                     ))
+                    Text("When enabled, Murmur saves raw and cleaned dictation text locally in Application Support.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
 
                     if let launchAtLoginError {
                         Text(launchAtLoginError)
@@ -162,30 +155,11 @@ struct GeneralTab: View {
         }
     }
 
-    private var microphoneSelection: Binding<String> {
-        Binding(
-            get: { settings.microphoneDeviceUID ?? "" },
-            set: { newValue in
-                settings.microphoneDeviceUID = newValue.isEmpty ? nil : newValue
-                if isTestingMicrophone {
-                    stopMicrophoneTest()
-                }
-            }
-        )
-    }
-
     private var microphoneDetailText: String {
-        guard let uid = settings.microphoneDeviceUID else {
-            if let current = audioDevices.first(where: \.isSystemDefault) {
-                return "Using the Mac's current default input: \(current.name)."
-            }
-            return "Using the Mac's current default input."
+        if let current = audioDevices.first(where: \.isSystemDefault) {
+            return "Using the Mac's current default input: \(current.name). Change it in macOS Sound settings."
         }
-
-        if let selected = audioDevices.first(where: { $0.uid == uid }) {
-            return "Pinned to \(selected.name). Murmur will keep using it when the system default changes."
-        }
-        return "The selected microphone is not currently connected. Murmur will fall back to the system default."
+        return "Using the Mac's current default input. Change it in macOS Sound settings."
     }
 
     private func refreshAudioDevices() {
@@ -199,10 +173,9 @@ struct GeneralTab: View {
         isTestingMicrophone = true
 
         let recorder = micTestRecorder
-        let preferredUID = settings.microphoneDeviceUID
         micTestTask = Task { @MainActor in
             do {
-                try await recorder.start(maxSeconds: 30, preferredDeviceUID: preferredUID)
+                try await recorder.start(maxSeconds: 30)
                 while !Task.isCancelled {
                     let level = await recorder.currentLevel()
                     micTestLevel = level
