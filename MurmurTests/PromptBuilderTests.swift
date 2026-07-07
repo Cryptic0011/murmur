@@ -26,6 +26,29 @@ struct PromptBuilderTests {
         #expect(p.localizedCaseInsensitiveContains("code fences"))
     }
 
+    @Test("vocabulary terms are listed in the prompt")
+    func vocabulary() {
+        let context = CleanupContext(vocabulary: ["Murmur", "Groq", "WhisperKit"])
+        let p = PromptBuilder.systemPrompt(for: .prose, context: context)
+        #expect(p.contains("Murmur, Groq, WhisperKit"))
+        #expect(p.localizedCaseInsensitiveContains("glossary"))
+    }
+
+    @Test("field context is embedded with guardrails")
+    func fieldContext() {
+        let context = CleanupContext(fieldText: "Hi team, quick update:")
+        let p = PromptBuilder.systemPrompt(for: .email, context: context)
+        #expect(p.contains("<field>\nHi team, quick update:\n</field>"))
+        #expect(p.localizedCaseInsensitiveContains("Do NOT repeat"))
+    }
+
+    @Test("empty context adds nothing")
+    func emptyContext() {
+        #expect(PromptBuilder.systemPrompt(for: .prose, context: .none) == PromptBuilder.systemPrompt(for: .prose))
+        #expect(!PromptBuilder.systemPrompt(for: .prose).contains("<field>"))
+        #expect(!PromptBuilder.systemPrompt(for: .prose).localizedCaseInsensitiveContains("glossary"))
+    }
+
     @Test("profile modes describe their target style")
     func profileModes() {
         #expect(PromptBuilder.systemPrompt(for: .email).localizedCaseInsensitiveContains("email"))

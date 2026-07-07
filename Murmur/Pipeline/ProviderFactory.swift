@@ -8,12 +8,20 @@ enum ProviderFactory {
     }
 
     @MainActor
-    static func makeProviders(settings: SettingsStore, apiKey: String) -> Providers {
+    static func makeProviders(
+        settings: SettingsStore, apiKey: String, cerebrasKey: String = "", customKey: String = ""
+    ) -> Providers {
         Providers(
             transcriber: makeTranscriber(settings: settings, apiKey: apiKey),
-            primaryCleanup: makeCleanupProvider(settings.primaryCleanupProvider, settings: settings, apiKey: apiKey),
+            primaryCleanup: makeCleanupProvider(
+                settings.primaryCleanupProvider, settings: settings,
+                apiKey: apiKey, cerebrasKey: cerebrasKey, customKey: customKey
+            ),
             fallbackCleanup: settings.secondaryCleanupProvider.map {
-                makeCleanupProvider($0, settings: settings, apiKey: apiKey)
+                makeCleanupProvider(
+                    $0, settings: settings,
+                    apiKey: apiKey, cerebrasKey: cerebrasKey, customKey: customKey
+                )
             }
         )
     }
@@ -22,14 +30,28 @@ enum ProviderFactory {
     static func makeTranscriber(settings: SettingsStore, apiKey: String) -> TranscriptionProvider {
         switch settings.transcriptionProvider {
         case .whisperLocal:
-            return WhisperKitProvider(modelName: settings.whisperModel)
+            return WhisperKitProvider(
+                modelName: settings.whisperModel,
+                vocabularyPrompt: settings.vocabularyPrompt,
+                translateToEnglish: settings.translateToEnglish
+            )
+        case .parakeetLocal:
+            return ParakeetProvider(modelVersion: settings.parakeetModel)
         case .appleSpeech:
             if #available(macOS 26.0, *) {
                 return AppleSpeechProvider()
             }
-            return WhisperKitProvider(modelName: settings.whisperModel)
+            return WhisperKitProvider(
+                modelName: settings.whisperModel,
+                vocabularyPrompt: settings.vocabularyPrompt,
+                translateToEnglish: settings.translateToEnglish
+            )
         case .groqAPI:
-            return GroqTranscriptionProvider(apiKey: apiKey, model: settings.groqTranscriptionModel)
+            return GroqTranscriptionProvider(
+                apiKey: apiKey,
+                model: settings.groqTranscriptionModel,
+                prompt: settings.vocabularyPrompt
+            )
         }
     }
 
@@ -37,11 +59,19 @@ enum ProviderFactory {
     static func makeCleanupProvider(
         _ option: CleanupProviderOption,
         settings: SettingsStore,
-        apiKey: String
+        apiKey: String,
+        cerebrasKey: String = "",
+        customKey: String = ""
     ) -> CleanupProvider {
         switch option {
         case .groqAPI:
-            return GroqProvider(apiKey: apiKey, model: settings.groqModel)
+            return OpenAICompatibleProvider.groq(apiKey: apiKey, model: settings.groqModel)
+        case .cerebrasAPI:
+            return OpenAICompatibleProvider.cerebras(apiKey: cerebrasKey, model: settings.cerebrasModel)
+        case .customAPI:
+            return OpenAICompatibleProvider.custom(
+                apiKey: customKey, baseURL: settings.customBaseURL, model: settings.customModel
+            )
         case .ollamaLocal:
             return GemmaOllamaProvider(model: settings.ollamaModel)
         case .appleFoundationModels:
@@ -49,10 +79,6 @@ enum ProviderFactory {
                 return AppleFoundationModelsProvider()
             }
             return GemmaOllamaProvider(model: settings.ollamaModel)
-        case .geminiCLI:
-            return GeminiCLIProvider(model: settings.geminiModel)
-        case .codexCLI:
-            return CodexCLIProvider(model: settings.codexModel)
         }
     }
 }

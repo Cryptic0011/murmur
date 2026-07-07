@@ -61,6 +61,9 @@ actor AppleSpeechProvider: TranscriptionProvider {
             }
             return assembled
         }
+        // If start/finalize throws below, the collector would otherwise sit
+        // suspended forever holding the transcriber and analyzer.
+        defer { collector.cancel() }
 
         let started = Date()
         try await analyzer.start(inputSequence: inputStream)
@@ -68,12 +71,7 @@ actor AppleSpeechProvider: TranscriptionProvider {
         inputContinuation?.finish()
         try await analyzer.finalizeAndFinish(through: .zero)
 
-        let text: String
-        do {
-            text = try await collector.value.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            throw error
-        }
+        let text = try await collector.value.trimmingCharacters(in: .whitespacesAndNewlines)
         log.info("Apple Speech transcribed in \(Date().timeIntervalSince(started))s")
 
         if text.isEmpty { throw AppleSpeechError.emptyResult }

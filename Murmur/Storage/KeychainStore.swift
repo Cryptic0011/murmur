@@ -5,6 +5,10 @@ struct KeychainStore {
     let service: String
     let account: String
 
+    static let groqAPIKey = KeychainStore(service: "com.murmur.app", account: "groq-api-key")
+    static let cerebrasAPIKey = KeychainStore(service: "com.murmur.app", account: "cerebras-api-key")
+    static let customAPIKey = KeychainStore(service: "com.murmur.app", account: "custom-api-key")
+
     enum Error: Swift.Error { case unexpectedStatus(OSStatus) }
 
     func set(_ value: String) throws {

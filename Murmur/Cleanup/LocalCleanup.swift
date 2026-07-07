@@ -50,6 +50,9 @@ enum LocalCleanup {
 
     private static func stripCorrectionPrefix(in text: String, mode: CleanupMode) -> String {
         guard mode != .code else { return text }
+        // Only explicit correction phrases — bare "i mean" is common mid-sentence
+        // filler ("the deploy, I mean the staging deploy") and cutting at it
+        // silently deletes everything the user said before it.
         let markers = [
             "scratch that",
             "never mind",
@@ -57,7 +60,6 @@ enum LocalCleanup {
             "oh wait",
             "wait no",
             "wait i mean",
-            "i mean",
             "or rather",
         ]
 

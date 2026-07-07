@@ -13,7 +13,7 @@ actor AppleFoundationModelsProvider: CleanupProvider {
 
     private let log = Logger(subsystem: "com.murmur.app", category: "foundation-models")
 
-    func clean(text: String, mode: CleanupMode) async throws -> String {
+    func clean(text: String, mode: CleanupMode, context: CleanupContext) async throws -> String {
         let model = SystemLanguageModel.default
         guard case .available = model.availability else {
             throw FoundationModelsError.modelUnavailable(Self.reason(for: model.availability))
@@ -21,13 +21,11 @@ actor AppleFoundationModelsProvider: CleanupProvider {
 
         let session = LanguageModelSession(
             model: model,
-            instructions: Instructions { PromptBuilder.systemPrompt(for: mode) }
+            instructions: Instructions { PromptBuilder.systemPrompt(for: mode, context: context) }
         )
 
         let userPrompt = """
-        <transcript>
-        \(text)
-        </transcript>
+        \(PromptBuilder.transcriptMessage(text))
 
         Begin your reply with <cleaned> and end it with </cleaned>. Output nothing else.
         """
@@ -35,10 +33,8 @@ actor AppleFoundationModelsProvider: CleanupProvider {
         let started = Date()
         let response = try await session.respond(
             to: Prompt(userPrompt),
-            options: GenerationOptions(
-                sampling: .greedy,
-                temperature: 0.2
-            )
+            // temperature is meaningless under greedy sampling — don't pass both.
+            options: GenerationOptions(sampling: .greedy)
         )
         log.info("Foundation Models cleanup in \(Date().timeIntervalSince(started))s")
 
@@ -53,8 +49,13 @@ actor AppleFoundationModelsProvider: CleanupProvider {
     func warmUp() async {
         let model = SystemLanguageModel.default
         guard case .available = model.availability else { return }
-        let session = LanguageModelSession(model: model, instructions: Instructions { "Warm-up." })
-        _ = try? await session.respond(to: Prompt("hi"))
+        // prewarm() loads weights without burning a full generation, and using the
+        // real instructions warms the actual KV-cache prefix the first dictation hits.
+        let session = LanguageModelSession(
+            model: model,
+            instructions: Instructions { PromptBuilder.systemPrompt(for: .prose) }
+        )
+        session.prewarm()
     }
 
     static func isAvailable() -> Bool {

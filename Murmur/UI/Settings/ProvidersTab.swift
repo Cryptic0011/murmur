@@ -4,47 +4,37 @@ import SwiftUI
 struct ProvidersTab: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var setup: DependencySetupCoordinator
-    @State private var groqKey: String = ""
     @State private var ollamaReachable: Bool = false
-    @State private var groqStatus: String?
-    @State private var isTestingGroq = false
-    @State private var geminiInstalled: Bool = false
-    @State private var geminiAuthenticated: Bool = false
-    @State private var geminiStatus: String?
-    @State private var isTestingGemini = false
-    @State private var codexInstalled: Bool = false
-    @State private var codexAuthenticated: Bool = false
-    @State private var codexAuthDetail: String?
-    @State private var codexAuthCheckedAt: Date?
-    @State private var codexStatus: String?
-    @State private var isTestingCodex = false
-    @State private var codexUsesCustomModel = false
+    @State private var installedOllamaModels: [String] = []
 
-    private let keychain = KeychainStore(service: "com.murmur.app", account: "groq-api-key")
+    static let physicalMemoryGB = Int(ProcessInfo.processInfo.physicalMemory / (1 << 30))
+
+    private func statusRow(symbol: String, tint: Color, text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
+            Text(text)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Best small cleanup models by unified memory. Cleanup is a light rewrite
+    /// task, so the smallest tier that fits comfortably wins on latency.
+    static var recommendedOllamaModels: [String] {
+        switch physicalMemoryGB {
+        case ..<12: return ["gemma4:e2b", "qwen3:1.7b"]
+        case ..<24: return ["gemma3:4b", "qwen3:4b"]
+        case ..<48: return ["qwen3:8b", "gemma3:12b"]
+        default: return ["gemma3:12b", "qwen3:14b"]
+        }
+    }
 
     private var appleIntelligenceHint: String {
         if #available(macOS 26.0, *) {
             return AppleFoundationModelsProvider.availabilityDescription()
         }
         return "Apple Intelligence requires macOS 26 or newer."
-    }
-
-    private var codexModelSelection: Binding<String> {
-        Binding(
-            get: {
-                CodexCLIProvider.ModelCatalog.options.contains(settings.codexModel)
-                    ? settings.codexModel
-                    : "custom"
-            },
-            set: { selection in
-                if selection == "custom" {
-                    codexUsesCustomModel = true
-                } else {
-                    codexUsesCustomModel = false
-                    settings.codexModel = selection
-                }
-            }
-        )
     }
 
     var body: some View {
@@ -56,7 +46,7 @@ struct ProvidersTab: View {
                     Text("Provider")
                         .font(.system(size: 13, weight: .bold, design: .rounded))
 
-                    Picker("", selection: Binding(
+                    Picker("Transcription provider", selection: Binding(
                         get: { settings.transcriptionProvider },
                         set: { settings.transcriptionProvider = $0 }
                     )) {
@@ -68,10 +58,50 @@ struct ProvidersTab: View {
                         }
                     }
                     .labelsHidden()
+                    .accessibilityLabel("Transcription provider")
                     .pickerStyle(.menu)
+
+                    if settings.transcriptionProvider == .whisperLocal {
+                        Toggle("Translate speech to English", isOn: Binding(
+                            get: { settings.translateToEnglish },
+                            set: { settings.translateToEnglish = $0 }
+                        ))
+                        .toggleStyle(.switch)
+                        if settings.translateToEnglish {
+                            Text(settings.whisperModel.hasSuffix(".en")
+                                 ? "Translation needs a multilingual Whisper model — the current English-only (.en) model will ignore this setting."
+                                 : "Speak any language; the transcript comes out in English.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
 
                     if settings.transcriptionProvider == .appleSpeech {
                         Text("Apple Speech uses the on-device SpeechAnalyzer model (macOS 26+). The first run downloads the speech asset; subsequent runs are instant.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if settings.transcriptionProvider == .parakeetLocal {
+                        Text("Parakeet model")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                        Picker(
+                            "Parakeet model",
+                            selection: Binding(
+                                get: { settings.parakeetModel },
+                                set: { settings.parakeetModel = $0 }
+                            )
+                        ) {
+                            Text("v2 — English, highest accuracy").tag("v2")
+                            Text("v3 — Multilingual (25 languages)").tag("v3")
+                        }
+                        .labelsHidden()
+                        .accessibilityLabel("Parakeet model")
+                        .pickerStyle(.menu)
+
+                        Text("Parakeet runs on the Neural Engine and is much faster than Whisper. The model (~600 MB) downloads from Hugging Face on first use.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -81,7 +111,7 @@ struct ProvidersTab: View {
                         Text("Whisper model")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                         Picker(
-                            "",
+                            "Whisper model",
                             selection: Binding(
                                 get: { settings.whisperModel },
                                 set: { settings.whisperModel = $0 }
@@ -93,8 +123,9 @@ struct ProvidersTab: View {
                             Text("medium.en").tag("openai_whisper-medium.en")
                         }
                         .labelsHidden()
+                        .accessibilityLabel("Whisper model")
                         .pickerStyle(.menu)
-                    } else {
+                    } else if settings.transcriptionProvider == .groqAPI {
                         Text("Groq transcription model")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                         TextField("Model", text: Binding(
@@ -110,7 +141,7 @@ struct ProvidersTab: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Primary cleanup")
                         .font(.system(size: 13, weight: .bold, design: .rounded))
-                    Picker("", selection: Binding(
+                    Picker("Primary cleanup provider", selection: Binding(
                         get: { settings.primaryCleanupProvider },
                         set: { settings.primaryCleanupProvider = $0 }
                     )) {
@@ -122,11 +153,12 @@ struct ProvidersTab: View {
                         }
                     }
                     .labelsHidden()
+                    .accessibilityLabel("Primary cleanup provider")
                     .pickerStyle(.menu)
 
                     Text("Secondary cleanup")
                         .font(.system(size: 13, weight: .bold, design: .rounded))
-                    Picker("", selection: Binding(
+                    Picker("Secondary cleanup provider", selection: Binding(
                         get: { settings.secondaryCleanupProvider },
                         set: { settings.secondaryCleanupProvider = $0 }
                     )) {
@@ -139,6 +171,7 @@ struct ProvidersTab: View {
                         }
                     }
                     .labelsHidden()
+                    .accessibilityLabel("Secondary cleanup provider")
                     .pickerStyle(.menu)
 
                     if settings.primaryCleanupProvider == .appleFoundationModels ||
@@ -148,288 +181,266 @@ struct ProvidersTab: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+
+                    Text("Custom instructions")
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                    TextEditor(text: Binding(
+                        get: { settings.cleanupInstructions },
+                        set: { settings.cleanupInstructions = $0 }
+                    ))
+                    .font(.system(size: 12))
+                    .frame(height: 60)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                    )
+                    Text("Optional style preferences applied to every cleanup — e.g. “Use British spelling” or “Never use em dashes”.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if settings.usesCustomAPI {
+                APIKeyProviderCard(
+                    title: "Custom Endpoint",
+                    subtitle: "Any OpenAI-compatible server: LM Studio, OpenRouter, llama.cpp, LiteLLM, and more. Local servers can leave the key empty.",
+                    keyLabel: "API key (optional for local servers)",
+                    keychain: .customAPIKey,
+                    settings: settings,
+                    makeProvider: { key in
+                        OpenAICompatibleProvider.custom(
+                            apiKey: key, baseURL: settings.customBaseURL, model: settings.customModel
+                        )
+                    }
+                ) {
+                    TextField("Base URL (e.g. http://localhost:1234/v1)", text: Binding(
+                        get: { settings.customBaseURL },
+                        set: { settings.customBaseURL = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+
+                    TextField("Model name", text: Binding(
+                        get: { settings.customModel },
+                        set: { settings.customModel = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
                 }
             }
 
             if settings.usesGroqAPI {
-                MurmurCard(title: "Groq API", subtitle: "Shared key for Groq transcription and cleanup providers.") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        SecureField("Groq API key", text: $groqKey)
-                            .textFieldStyle(.roundedBorder)
-                            .onAppear { groqKey = (try? keychain.get()) ?? "" }
-
-                        if settings.transcriptionProvider == .groqAPI {
-                            TextField("Transcription model", text: Binding(
-                                get: { settings.groqTranscriptionModel },
-                                set: { settings.groqTranscriptionModel = $0 }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        if settings.primaryCleanupProvider == .groqAPI || settings.secondaryCleanupProvider == .groqAPI {
-                            TextField("Cleanup model", text: Binding(
-                                get: { settings.groqModel },
-                                set: { settings.groqModel = $0 }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        HStack(spacing: 10) {
-                            Button("Save Key") {
-                                try? keychain.set(groqKey)
-                                NotificationCenter.default.post(name: .settingsStoreDidChange, object: settings)
-                            }
-                            .buttonStyle(.borderedProminent)
-
-                            Button(isTestingGroq ? "Testing…" : "Test Connection") {
-                                Task { await testGroqConnection() }
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(isTestingGroq)
-                        }
-
-                        if let groqStatus {
-                            Text(groqStatus)
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(.secondary)
-                        }
+                APIKeyProviderCard(
+                    title: "Groq API",
+                    subtitle: "Shared key for Groq transcription and cleanup providers.",
+                    keyLabel: "Groq API key",
+                    keychain: .groqAPIKey,
+                    settings: settings,
+                    makeProvider: { key in
+                        OpenAICompatibleProvider.groq(apiKey: key, model: settings.groqModel)
                     }
+                ) {
+                    if settings.transcriptionProvider == .groqAPI {
+                        TextField("Transcription model", text: Binding(
+                            get: { settings.groqTranscriptionModel },
+                            set: { settings.groqTranscriptionModel = $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                    }
+
+                    if settings.primaryCleanupProvider == .groqAPI || settings.secondaryCleanupProvider == .groqAPI {
+                        TextField("Cleanup model", text: Binding(
+                            get: { settings.groqModel },
+                            set: { settings.groqModel = $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                    }
+                }
+            }
+
+            if settings.usesCerebrasAPI {
+                APIKeyProviderCard(
+                    title: "Cerebras API",
+                    subtitle: "Fastest hosted cleanup available — free tier at cloud.cerebras.ai.",
+                    keyLabel: "Cerebras API key",
+                    keychain: .cerebrasAPIKey,
+                    settings: settings,
+                    makeProvider: { key in
+                        OpenAICompatibleProvider.cerebras(apiKey: key, model: settings.cerebrasModel)
+                    }
+                ) {
+                    TextField("Cleanup model", text: Binding(
+                        get: { settings.cerebrasModel },
+                        set: { settings.cerebrasModel = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
                 }
             }
 
             if settings.usesLocalOllama {
-                MurmurCard(title: "Local Cleanup", subtitle: "Gemma via Ollama handles offline cleanup when selected.") {
+                MurmurCard(title: "Local Cleanup", subtitle: "Any Ollama chat model handles offline cleanup when selected.") {
                     VStack(alignment: .leading, spacing: 14) {
-                        TextField("Ollama model", text: Binding(
-                            get: { settings.ollamaModel },
-                            set: { settings.ollamaModel = $0 }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-
                         HStack(spacing: 8) {
-                            Image(systemName: ollamaReachable ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                .foregroundStyle(ollamaReachable ? .green : .red)
-                            Text(ollamaReachable ? "Ollama reachable on localhost:11434" : "Ollama not reachable on localhost:11434")
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                            TextField("Ollama model", text: Binding(
+                                get: { settings.ollamaModel },
+                                set: { settings.ollamaModel = $0 }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+
+                            if !installedOllamaModels.isEmpty {
+                                Menu("Installed") {
+                                    ForEach(installedOllamaModels, id: \.self) { model in
+                                        Button {
+                                            settings.ollamaModel = model
+                                        } label: {
+                                            if model == settings.ollamaModel {
+                                                Label(model, systemImage: "checkmark")
+                                            } else {
+                                                Text(model)
+                                            }
+                                        }
+                                    }
+                                }
+                                .fixedSize()
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Recommended for this Mac (\(Self.physicalMemoryGB) GB memory)")
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                            HStack(spacing: 8) {
+                                ForEach(Self.recommendedOllamaModels, id: \.self) { model in
+                                    Button {
+                                        settings.ollamaModel = model
+                                    } label: {
+                                        if installedOllamaModels.contains(model) {
+                                            Label(model, systemImage: "checkmark.circle")
+                                        } else {
+                                            Text(model)
+                                        }
+                                    }
+                                }
+                            }
+                            Text("Cleanup runs privately on this Mac. Picking a model that isn't installed downloads it automatically — a one-time download of a few GB.")
+                                .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        if ollamaReachable {
+                            statusRow(symbol: "checkmark.circle.fill", tint: .green, text: "Ollama is running.")
+                        } else if GemmaOllamaProvider.ollamaExecutablePath() != nil {
+                            statusRow(
+                                symbol: "moon.zzz.fill",
+                                tint: .secondary,
+                                text: "Ollama isn't running — Murmur starts it automatically when you dictate."
+                            )
+                        } else {
+                            statusRow(symbol: "xmark.circle.fill", tint: .red, text: "Ollama isn't installed on this Mac.")
+                            Button("Install Ollama (free)") {
+                                setup.openOllamaDownload()
+                            }
                         }
                     }
                     .task(id: settings.ollamaModel) {
                         ollamaReachable = await GemmaOllamaProvider.isReachable()
+                        installedOllamaModels = await GemmaOllamaProvider.installedModels()
                     }
-                }
-            }
-
-            if settings.usesGeminiCLI {
-                MurmurCard(title: "Gemini CLI", subtitle: "Cloud cleanup through your existing Gemini CLI OAuth session — no API key needed.") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        TextField("Gemini model", text: Binding(
-                            get: { settings.geminiModel },
-                            set: { settings.geminiModel = $0 }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-
-                        HStack(spacing: 8) {
-                            Image(systemName: geminiInstalled ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                .foregroundStyle(geminiInstalled ? .green : .red)
-                            Text(geminiInstalled ? "Gemini CLI found on disk." : "Install `gemini-cli` to enable this provider.")
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        HStack(spacing: 8) {
-                            Image(systemName: geminiAuthenticated ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                                .foregroundStyle(geminiAuthenticated ? .green : .orange)
-                            Text(geminiAuthenticated
-                                 ? "OAuth credentials detected in ~/.gemini/oauth_creds.json."
-                                 : "Run `gemini` in a terminal once and complete sign-in.")
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Text("Cleanup text is sent to Google through Gemini CLI. Transcription audio still follows your selected speech-to-text provider.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 10) {
-                            Button(isTestingGemini ? "Testing…" : "Test Gemini CLI") {
-                                Task { await testGeminiConnection() }
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(isTestingGemini || !geminiInstalled || !geminiAuthenticated)
-
-                            Button("Setup Guide") {
-                                setup.openGeminiCLIDocs()
-                            }
-                            .buttonStyle(.bordered)
-                        }
-
-                        if let geminiStatus {
-                            Text(geminiStatus)
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .task(id: settings.geminiModel) {
-                        geminiInstalled = GeminiCLIProvider.isInstalled()
-                        geminiAuthenticated = GeminiCLIProvider.isAuthenticated()
-                    }
-                }
-            }
-
-            if settings.usesCodexCLI {
-                MurmurCard(title: "ChatGPT OAuth", subtitle: "Cloud cleanup through your Codex CLI ChatGPT sign-in — no API key needed.") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("Codex model")
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                        Picker("", selection: codexModelSelection) {
-                            ForEach(CodexCLIProvider.ModelCatalog.options, id: \.self) { model in
-                                Text(model == CodexCLIProvider.ModelCatalog.recommended ? "\(model) — Recommended" : model)
-                                    .tag(model)
-                            }
-                            Text("Custom…").tag("custom")
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-
-                        if codexUsesCustomModel || !CodexCLIProvider.ModelCatalog.options.contains(settings.codexModel) {
-                            TextField("Custom Codex model", text: Binding(
-                                get: { settings.codexModel },
-                                set: { settings.codexModel = $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                            ))
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        HStack(spacing: 8) {
-                            Image(systemName: codexInstalled ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                .foregroundStyle(codexInstalled ? .green : .red)
-                            Text(codexInstalled ? "Codex CLI found on disk." : "Install `@openai/codex` to enable this provider.")
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        HStack(spacing: 8) {
-                            Image(systemName: codexAuthenticated ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                                .foregroundStyle(codexAuthenticated ? .green : .orange)
-                            Text(codexAuthenticated
-                                 ? (codexAuthDetail ?? "Codex CLI reports an active ChatGPT sign-in.")
-                                 : "Run `codex login` in a terminal and choose Sign in with ChatGPT.")
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Text("Cleanup text is sent to OpenAI through Codex CLI. Transcription audio still follows your selected speech-to-text provider.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 10) {
-                            Button("Copy Install") {
-                                copyToClipboard("npm i -g @openai/codex")
-                                codexStatus = "Copied Codex CLI install command."
-                            }
-                            .buttonStyle(.bordered)
-
-                            Button("Copy Login") {
-                                copyToClipboard("codex login")
-                                codexStatus = "Copied Codex login command."
-                            }
-                            .buttonStyle(.bordered)
-
-                            if settings.codexModel != CodexCLIProvider.ModelCatalog.recommended {
-                                Button("Use Recommended Model") {
-                                    setup.useRecommendedCodexModel()
-                                    codexUsesCustomModel = false
-                                    codexStatus = "Switched to \(CodexCLIProvider.ModelCatalog.recommended)."
-                                }
-                                .buttonStyle(.bordered)
-                            }
-
-                            Button(isTestingCodex ? "Testing…" : "Test ChatGPT OAuth") {
-                                Task { await testCodexConnection() }
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(isTestingCodex || !codexInstalled || !codexAuthenticated)
-
-                            Button("Setup Guide") {
-                                setup.openCodexCLIDocs()
-                            }
-                            .buttonStyle(.bordered)
-                        }
-
-                        if let codexStatus {
-                            Text(codexStatus)
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .task {
-                        codexUsesCustomModel = !CodexCLIProvider.ModelCatalog.options.contains(settings.codexModel)
-                        await refreshCodexStatus()
+                    // Refresh when setup finishes so "isn't installed" clears
+                    // without reopening the tab.
+                    .task(id: setup.snapshot.ollama) {
+                        ollamaReachable = await GemmaOllamaProvider.isReachable()
+                        installedOllamaModels = await GemmaOllamaProvider.installedModels()
                     }
                 }
             }
         }
     }
+}
 
-    @MainActor
-    private func refreshCodexStatus(force: Bool = false) async {
-        codexInstalled = CodexCLIProvider.isInstalled()
-        if !force,
-           let codexAuthCheckedAt,
-           Date().timeIntervalSince(codexAuthCheckedAt) < 30
-        {
-            return
-        }
-        let status = await CodexCLIProvider.authenticationStatus(timeout: 4.0)
-        codexAuthCheckedAt = Date()
-        codexAuthenticated = status.isAuthenticated
-        codexAuthDetail = status.detail
+/// Shared key + save + test skeleton for API-key cleanup providers.
+private struct APIKeyProviderCard<ModelFields: View>: View {
+    let title: String
+    let subtitle: String
+    let keyLabel: String
+    let keychain: KeychainStore
+    let settings: SettingsStore
+    let makeProvider: (String) -> CleanupProvider
+    @ViewBuilder let modelFields: ModelFields
+
+    @State private var key: String = ""
+    @State private var status: String?
+    @State private var isTesting = false
+
+    init(
+        title: String,
+        subtitle: String,
+        keyLabel: String,
+        keychain: KeychainStore,
+        settings: SettingsStore,
+        makeProvider: @escaping (String) -> CleanupProvider,
+        @ViewBuilder modelFields: () -> ModelFields
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.keyLabel = keyLabel
+        self.keychain = keychain
+        self.settings = settings
+        self.makeProvider = makeProvider
+        self.modelFields = modelFields()
     }
 
-    @MainActor
-    private func testCodexConnection() async {
-        isTestingCodex = true
-        defer { isTestingCodex = false }
+    var body: some View {
+        MurmurCard(title: title, subtitle: subtitle) {
+            VStack(alignment: .leading, spacing: 14) {
+                SecureField(keyLabel, text: $key)
+                    .textFieldStyle(.roundedBorder)
+                    .onAppear { key = (try? keychain.get()) ?? "" }
+
+                modelFields
+
+                HStack(spacing: 10) {
+                    Button("Save Key") { saveKey() }
+                        .buttonStyle(.borderedProminent)
+
+                    Button(isTesting ? "Testing…" : "Test Connection") {
+                        Task { await testConnection() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isTesting)
+                }
+
+                if let status {
+                    Text(status)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func saveKey() {
         do {
-            await refreshCodexStatus(force: true)
-            let provider = CodexCLIProvider(model: settings.codexModel, timeout: 45.0)
-            _ = try await provider.clean(text: "test connection um", mode: .light)
-            codexStatus = "ChatGPT OAuth responded successfully."
+            try keychain.set(key)
+            status = "Key saved."
         } catch {
-            codexStatus = "ChatGPT OAuth test failed: \(error.localizedDescription)"
+            status = "Couldn't save key to Keychain: \(error.localizedDescription)"
         }
+        NotificationCenter.default.post(name: .settingsStoreDidChange, object: settings)
     }
 
     @MainActor
-    private func testGeminiConnection() async {
-        isTestingGemini = true
-        defer { isTestingGemini = false }
+    private func testConnection() async {
+        isTesting = true
+        defer { isTesting = false }
+        // Persist first, then test the saved key — a green test on an unsaved key
+        // used to pass while real dictations kept failing.
+        saveKey()
+        let savedKey = (try? keychain.get()) ?? key
         do {
-            let provider = GeminiCLIProvider(model: settings.geminiModel, timeout: 30.0)
-            _ = try await provider.clean(text: "test connection um", mode: .light)
-            geminiStatus = "Gemini CLI responded successfully."
+            _ = try await makeProvider(savedKey).clean(text: "test connection", mode: .light)
+            status = "\(title) responded successfully. Key saved."
         } catch {
-            geminiStatus = "Gemini CLI test failed: \(error.localizedDescription)"
+            status = "\(title) test failed: \(error.localizedDescription)"
         }
-    }
-
-    @MainActor
-    private func testGroqConnection() async {
-        isTestingGroq = true
-        defer { isTestingGroq = false }
-        do {
-            let provider = GroqProvider(apiKey: groqKey, model: settings.groqModel, timeout: 5.0)
-            _ = try await provider.clean(text: "test connection", mode: .light)
-            groqStatus = "Groq responded successfully."
-        } catch {
-            groqStatus = "Groq test failed: \(error.localizedDescription)"
-        }
-    }
-
-    private func copyToClipboard(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
     }
 }

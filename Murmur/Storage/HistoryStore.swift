@@ -50,7 +50,9 @@ final class HistoryStore: @unchecked Sendable {
 
     func append(_ entry: HistoryEntry) throws {
         try queue.sync {
-            var entries = (try? readUnsynced()) ?? []
+            // A corrupt/undecodable file must throw, not be treated as empty —
+            // otherwise this append overwrites the user's entire history.
+            var entries = try readUnsynced()
             entries.append(entry)
             if entries.count > cap { entries.removeFirst(entries.count - cap) }
             try writeUnsynced(entries)
@@ -83,5 +85,9 @@ final class HistoryStore: @unchecked Sendable {
     private func writeUnsynced(_ entries: [HistoryEntry]) throws {
         let data = try JSONEncoder().encode(entries)
         try data.write(to: fileURL, options: .atomic)
+        // Transcripts are sensitive; keep them owner-readable only.
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: fileURL.path
+        )
     }
 }

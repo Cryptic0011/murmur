@@ -63,8 +63,6 @@ struct DependencySetupSnapshot: Equatable, Sendable {
     var groq: DependencySetupState
     var ollama: DependencySetupState
     var appleIntelligence: DependencySetupState
-    var geminiCLI: DependencySetupState
-    var codexCLI: DependencySetupState
     var transcriptionProvider: TranscriptionProviderOption
     var primaryCleanupProvider: CleanupProviderOption
     var secondaryCleanupProvider: CleanupProviderOption?
@@ -72,8 +70,6 @@ struct DependencySetupSnapshot: Equatable, Sendable {
     var groqTranscriptionModel: String
     var groqCleanupModel: String
     var ollamaModel: String
-    var geminiModel: String
-    var codexModel: String
 
     var usesWhisperLocal: Bool { transcriptionProvider == .whisperLocal }
     var usesGroqAPI: Bool {
@@ -88,16 +84,9 @@ struct DependencySetupSnapshot: Equatable, Sendable {
         primaryCleanupProvider == .appleFoundationModels ||
             secondaryCleanupProvider == .appleFoundationModels
     }
-    var usesGeminiCLI: Bool {
-        primaryCleanupProvider == .geminiCLI || secondaryCleanupProvider == .geminiCLI
-    }
-    var usesCodexCLI: Bool {
-        primaryCleanupProvider == .codexCLI || secondaryCleanupProvider == .codexCLI
-    }
 
     var isRunning: Bool {
-        whisper.isRunning || groq.isRunning || ollama.isRunning ||
-            appleIntelligence.isRunning || geminiCLI.isRunning || codexCLI.isRunning
+        whisper.isRunning || groq.isRunning || ollama.isRunning || appleIntelligence.isRunning
     }
 
     var hasAttention: Bool {
@@ -105,8 +94,6 @@ struct DependencySetupSnapshot: Equatable, Sendable {
             (usesGroqAPI && groq.isActionRequired) ||
             (usesOllama && ollama.isActionRequired) ||
             (usesAppleIntelligence && appleIntelligence.isActionRequired) ||
-            (usesGeminiCLI && geminiCLI.isActionRequired) ||
-            (usesCodexCLI && codexCLI.isActionRequired) ||
             isFailure
     }
 
@@ -115,8 +102,6 @@ struct DependencySetupSnapshot: Equatable, Sendable {
         if usesGroqAPI, case .failure = groq { return true }
         if usesOllama, case .failure = ollama { return true }
         if usesAppleIntelligence, case .failure = appleIntelligence { return true }
-        if usesGeminiCLI, case .failure = geminiCLI { return true }
-        if usesCodexCLI, case .failure = codexCLI { return true }
         return false
     }
 
@@ -131,16 +116,12 @@ struct DependencySetupSnapshot: Equatable, Sendable {
         if usesGroqAPI, groq.isRunning { return groq.detail }
         if usesOllama, ollama.isRunning { return ollama.detail }
         if usesAppleIntelligence, appleIntelligence.isRunning { return appleIntelligence.detail }
-        if usesGeminiCLI, geminiCLI.isRunning { return geminiCLI.detail }
-        if usesCodexCLI, codexCLI.isRunning { return codexCLI.detail }
         if usesWhisperLocal, whisper.isActionRequired || isFailureState(whisper) { return whisper.detail }
         if usesGroqAPI, groq.isActionRequired || isFailureState(groq) { return groq.detail }
         if usesOllama, ollama.isActionRequired || isFailureState(ollama) { return ollama.detail }
         if usesAppleIntelligence, appleIntelligence.isActionRequired || isFailureState(appleIntelligence) {
             return appleIntelligence.detail
         }
-        if usesGeminiCLI, geminiCLI.isActionRequired || isFailureState(geminiCLI) { return geminiCLI.detail }
-        if usesCodexCLI, codexCLI.isActionRequired || isFailureState(codexCLI) { return codexCLI.detail }
         let cleanupDetail = secondaryCleanupProvider == nil
             ? "No secondary cleanup provider is configured."
             : "Primary and secondary cleanup providers are ready."
@@ -170,21 +151,13 @@ struct DependencySetupSnapshot: Equatable, Sendable {
             appleIntelligence: settings.usesAppleFoundationModels
                 ? .idle("Apple Intelligence has not been checked yet.")
                 : .success("Apple Intelligence is not selected."),
-            geminiCLI: settings.usesGeminiCLI
-                ? .idle("Gemini CLI has not been checked yet.")
-                : .success("Gemini CLI is not selected."),
-            codexCLI: settings.usesCodexCLI
-                ? .idle("Codex CLI has not been checked yet.")
-                : .success("Codex CLI is not selected."),
             transcriptionProvider: settings.transcriptionProvider,
             primaryCleanupProvider: settings.primaryCleanupProvider,
             secondaryCleanupProvider: settings.secondaryCleanupProvider,
             whisperModel: settings.whisperModel,
             groqTranscriptionModel: settings.groqTranscriptionModel,
             groqCleanupModel: settings.groqModel,
-            ollamaModel: settings.ollamaModel,
-            geminiModel: settings.geminiModel,
-            codexModel: settings.codexModel
+            ollamaModel: settings.ollamaModel
         )
     }
 
@@ -201,6 +174,10 @@ final class DependencySetupCoordinator: ObservableObject {
     private let settings: SettingsStore
     private var settingsObserver: NSObjectProtocol?
     private var setupTask: Task<Void, Never>?
+    private var ollamaWatcher: Task<Void, Never>?
+    /// Bumped every time a new setup run starts; async callbacks from a
+    /// superseded run compare against it and drop their updates.
+    private var setupGeneration = 0
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -222,71 +199,48 @@ final class DependencySetupCoordinator: ObservableObject {
             NotificationCenter.default.removeObserver(settingsObserver)
         }
         setupTask?.cancel()
+        ollamaWatcher?.cancel()
     }
 
     func startAutomaticSetup(force: Bool = false) {
-        let whisperModel = settings.whisperModel
-        let groqTranscriptionModel = settings.groqTranscriptionModel
-        let groqCleanupModel = settings.groqModel
-        let ollamaModel = settings.ollamaModel
-        let geminiModel = settings.geminiModel
-        let codexModel = settings.codexModel
-        let transcriptionProvider = settings.transcriptionProvider
-        let primaryCleanupProvider = settings.primaryCleanupProvider
-        let secondaryCleanupProvider = settings.secondaryCleanupProvider
+        let config = Config(
+            whisperModel: settings.whisperModel,
+            groqTranscriptionModel: settings.groqTranscriptionModel,
+            groqCleanupModel: settings.groqModel,
+            ollamaModel: settings.ollamaModel,
+            transcriptionProvider: settings.transcriptionProvider,
+            primaryCleanupProvider: settings.primaryCleanupProvider,
+            secondaryCleanupProvider: settings.secondaryCleanupProvider
+        )
 
+        // Unchanged config never restarts setup — settingsStoreDidChange fires for
+        // every setter (sliders, toggles), and re-running would reload models and
+        // re-probe providers on each keystroke.
         if !force,
-           snapshot.transcriptionProvider == transcriptionProvider,
-           snapshot.primaryCleanupProvider == primaryCleanupProvider,
-           snapshot.secondaryCleanupProvider == secondaryCleanupProvider,
-           snapshot.whisperModel == whisperModel,
-           snapshot.groqTranscriptionModel == groqTranscriptionModel,
-           snapshot.groqCleanupModel == groqCleanupModel,
-           snapshot.ollamaModel == ollamaModel,
-           snapshot.geminiModel == geminiModel,
-           snapshot.codexModel == codexModel,
-           snapshot.isRunning
+           snapshot.transcriptionProvider == config.transcriptionProvider,
+           snapshot.primaryCleanupProvider == config.primaryCleanupProvider,
+           snapshot.secondaryCleanupProvider == config.secondaryCleanupProvider,
+           snapshot.whisperModel == config.whisperModel,
+           snapshot.groqTranscriptionModel == config.groqTranscriptionModel,
+           snapshot.groqCleanupModel == config.groqCleanupModel,
+           snapshot.ollamaModel == config.ollamaModel
         {
             return
         }
 
         setupTask?.cancel()
+        ollamaWatcher?.cancel()
+        setupGeneration += 1
+        let generation = setupGeneration
         snapshot = .initial(settings: settings)
 
         setupTask = Task { [weak self] in
             guard let self else { return }
-            await self.prepareDependencies(
-                whisperModel: whisperModel,
-                groqTranscriptionModel: groqTranscriptionModel,
-                groqCleanupModel: groqCleanupModel,
-                ollamaModel: ollamaModel,
-                geminiModel: geminiModel,
-                codexModel: codexModel,
-                transcriptionProvider: transcriptionProvider,
-                primaryCleanupProvider: primaryCleanupProvider,
-                secondaryCleanupProvider: secondaryCleanupProvider
-            )
+            await self.prepareDependencies(config: config, generation: generation)
         }
     }
 
     func retry() {
-        startAutomaticSetup(force: true)
-    }
-
-    func useChatGPTOAuthCleanup() {
-        settings.primaryCleanupProvider = .codexCLI
-        settings.codexModel = CodexCLIProvider.ModelCatalog.recommended
-        if settings.secondaryCleanupProvider == .codexCLI {
-            settings.secondaryCleanupProvider = nil
-        }
-        if settings.secondaryCleanupProvider == nil {
-            settings.secondaryCleanupProvider = CleanupProviderOption.defaultFallback
-        }
-        startAutomaticSetup(force: true)
-    }
-
-    func useRecommendedCodexModel() {
-        settings.codexModel = CodexCLIProvider.ModelCatalog.recommended
         startAutomaticSetup(force: true)
     }
 
@@ -300,124 +254,108 @@ final class DependencySetupCoordinator: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    func openGeminiCLIDocs() {
-        guard let url = URL(string: "https://github.com/google-gemini/gemini-cli#quickstart") else { return }
-        NSWorkspace.shared.open(url)
+    private struct Config: Sendable {
+        let whisperModel: String
+        let groqTranscriptionModel: String
+        let groqCleanupModel: String
+        let ollamaModel: String
+        let transcriptionProvider: TranscriptionProviderOption
+        let primaryCleanupProvider: CleanupProviderOption
+        let secondaryCleanupProvider: CleanupProviderOption?
     }
 
-    func openCodexCLIDocs() {
-        guard let url = URL(string: "https://help.openai.com/en/articles/11381614") else { return }
-        NSWorkspace.shared.open(url)
+    private func prepareDependencies(config: Config, generation: Int) async {
+        // The checks are independent; run them concurrently so a long Whisper
+        // download doesn't leave the other status cards on "not checked yet".
+        async let whisper: Void = prepareWhisper(config: config)
+        async let groq: Void = prepareGroq(config: config)
+        async let apple: Void = prepareAppleIntelligence(config: config)
+        async let ollama: Void = prepareOllama(config: config, generation: generation)
+        _ = await (whisper, groq, apple, ollama)
     }
 
-    private func prepareDependencies(
-        whisperModel: String,
-        groqTranscriptionModel: String,
-        groqCleanupModel: String,
-        ollamaModel: String,
-        geminiModel: String,
-        codexModel: String,
-        transcriptionProvider: TranscriptionProviderOption,
-        primaryCleanupProvider: CleanupProviderOption,
-        secondaryCleanupProvider: CleanupProviderOption?
-    ) async {
-        if transcriptionProvider == .whisperLocal {
-            updateWhisper(.running("Preparing Whisper model \(whisperModel)…", progress: nil))
-            do {
-                let provider = WhisperKitProvider(modelName: whisperModel)
-                try await provider.ensureLoaded()
-                guard !Task.isCancelled else { return }
-                updateWhisper(.success("Whisper model \(whisperModel) is ready."))
-            } catch {
-                guard !Task.isCancelled else { return }
-                updateWhisper(.failure("Whisper setup failed for \(whisperModel)."))
-            }
-        } else {
+    private func prepareWhisper(config: Config) async {
+        guard config.transcriptionProvider == .whisperLocal else {
             updateWhisper(.success("Whisper local transcription is not selected."))
+            return
         }
-
-        let usesGroqAPI = transcriptionProvider == .groqAPI ||
-            primaryCleanupProvider == .groqAPI ||
-            secondaryCleanupProvider == .groqAPI
-        if usesGroqAPI {
-            let storedKey = try? KeychainStore(service: "com.murmur.app", account: "groq-api-key").get()
-            let hasKey = !(storedKey ?? "").isEmpty
-            if !hasKey {
-                updateGroq(.actionRequired("Add a Groq API key to use \(transcriptionProvider == .groqAPI ? groqTranscriptionModel : groqCleanupModel)."))
-            } else {
-                let groqRole: String
-                if transcriptionProvider == .groqAPI {
-                    groqRole = "Groq transcription"
-                } else if secondaryCleanupProvider == .groqAPI || primaryCleanupProvider == .groqAPI {
-                    groqRole = "Groq cleanup"
-                } else {
-                    groqRole = "Groq API"
-                }
-                updateGroq(.success("\(groqRole) is configured and ready."))
-            }
-        } else {
-            updateGroq(.success("Groq API is not selected."))
-        }
-
-        let usesAppleIntelligence = primaryCleanupProvider == .appleFoundationModels ||
-            secondaryCleanupProvider == .appleFoundationModels
-        if usesAppleIntelligence {
-            if #available(macOS 26.0, *) {
-                if AppleFoundationModelsProvider.isAvailable() {
-                    updateAppleIntelligence(.success("Apple Intelligence is ready."))
-                } else {
-                    updateAppleIntelligence(.actionRequired(AppleFoundationModelsProvider.availabilityDescription()))
-                }
-            } else {
-                updateAppleIntelligence(.actionRequired("Apple Intelligence requires macOS 26 or newer."))
-            }
-        } else {
-            updateAppleIntelligence(.success("Apple Intelligence is not selected."))
-        }
-
-        let usesGeminiCLI = primaryCleanupProvider == .geminiCLI || secondaryCleanupProvider == .geminiCLI
-        if usesGeminiCLI {
-            if !GeminiCLIProvider.isInstalled() {
-                updateGeminiCLI(.actionRequired("Install the Gemini CLI (`brew install gemini-cli` or `npm i -g @google/gemini-cli`)."))
-            } else if !GeminiCLIProvider.isAuthenticated() {
-                updateGeminiCLI(.actionRequired("Run `gemini` in a terminal once and finish the OAuth sign-in."))
-            } else {
-                updateGeminiCLI(.success("Gemini CLI is authenticated and using \(geminiModel)."))
-            }
-        } else {
-            updateGeminiCLI(.success("Gemini CLI is not selected."))
-        }
-
-        let usesCodexCLI = primaryCleanupProvider == .codexCLI || secondaryCleanupProvider == .codexCLI
-        if usesCodexCLI {
-            updateCodexCLI(.running("Checking Codex CLI ChatGPT sign-in...", progress: nil))
-            let status = await CodexCLIProvider.authenticationStatus(timeout: 4.0)
+        updateWhisper(.running("Preparing Whisper model \(config.whisperModel)…", progress: nil))
+        do {
+            let provider = WhisperKitProvider(modelName: config.whisperModel)
+            try await provider.ensureLoaded()
             guard !Task.isCancelled else { return }
-            switch status {
-            case .authenticated:
-                updateCodexCLI(.success("Codex CLI is authenticated with ChatGPT and using \(codexModel)."))
-            case .notInstalled(let detail), .notAuthenticated(let detail), .unavailable(let detail):
-                updateCodexCLI(.actionRequired(detail))
+            updateWhisper(.success("Whisper model \(config.whisperModel) is ready."))
+        } catch {
+            guard !Task.isCancelled else { return }
+            updateWhisper(.failure("Whisper setup failed for \(config.whisperModel)."))
+        }
+    }
+
+    private func prepareGroq(config: Config) async {
+        let usesGroqAPI = config.transcriptionProvider == .groqAPI ||
+            config.primaryCleanupProvider == .groqAPI ||
+            config.secondaryCleanupProvider == .groqAPI
+        guard usesGroqAPI else {
+            updateGroq(.success("Groq API is not selected."))
+            return
+        }
+        let storedKey = try? KeychainStore.groqAPIKey.get()
+        let hasKey = !(storedKey ?? "").isEmpty
+        if !hasKey {
+            updateGroq(.actionRequired("Add a Groq API key to use \(config.transcriptionProvider == .groqAPI ? config.groqTranscriptionModel : config.groqCleanupModel)."))
+        } else {
+            let groqRole: String
+            if config.transcriptionProvider == .groqAPI {
+                groqRole = "Groq transcription"
+            } else {
+                groqRole = "Groq cleanup"
+            }
+            updateGroq(.success("\(groqRole) is configured and ready."))
+        }
+    }
+
+    private func prepareAppleIntelligence(config: Config) async {
+        let usesAppleIntelligence = config.primaryCleanupProvider == .appleFoundationModels ||
+            config.secondaryCleanupProvider == .appleFoundationModels
+        guard usesAppleIntelligence else {
+            updateAppleIntelligence(.success("Apple Intelligence is not selected."))
+            return
+        }
+        if #available(macOS 26.0, *) {
+            if AppleFoundationModelsProvider.isAvailable() {
+                updateAppleIntelligence(.success("Apple Intelligence is ready."))
+            } else {
+                updateAppleIntelligence(.actionRequired(AppleFoundationModelsProvider.availabilityDescription()))
             }
         } else {
-            updateCodexCLI(.success("Codex CLI is not selected."))
+            updateAppleIntelligence(.actionRequired("Apple Intelligence requires macOS 26 or newer."))
         }
+    }
 
-        let usesLocalOllama = primaryCleanupProvider == .ollamaLocal || secondaryCleanupProvider == .ollamaLocal
+    private func prepareOllama(config: Config, generation: Int) async {
+        let usesLocalOllama = config.primaryCleanupProvider == .ollamaLocal ||
+            config.secondaryCleanupProvider == .ollamaLocal
         guard usesLocalOllama else {
             updateOllama(.success("Ollama local cleanup is not selected."))
             return
         }
+        let ollamaModel = config.ollamaModel
 
         guard GemmaOllamaProvider.ollamaExecutablePath() != nil else {
-            updateOllama(.actionRequired("Install Ollama to use the \(ollamaModel) local cleanup model."))
+            updateOllama(.actionRequired("Install the free Ollama app — Murmur finishes setup automatically once it's installed."))
+            watchForOllama(generation: generation) {
+                GemmaOllamaProvider.ollamaExecutablePath() != nil
+            }
             return
         }
 
         updateOllama(.running("Starting Ollama…", progress: nil))
         guard await GemmaOllamaProvider.ensureRunning() else {
             guard !Task.isCancelled else { return }
-            updateOllama(.actionRequired("Ollama is installed but did not come online on localhost:11434."))
+            updateOllama(.actionRequired("Ollama is installed but didn't start. Open the Ollama app once — Murmur retries automatically."))
+            watchForOllama(generation: generation) {
+                await GemmaOllamaProvider.isReachable()
+            }
             return
         }
 
@@ -430,19 +368,38 @@ final class DependencySetupCoordinator: ObservableObject {
         do {
             let pulled = try await GemmaOllamaProvider.pullModel(model: ollamaModel) { [weak self] detail, progress in
                 Task { @MainActor in
-                    guard !(Task.isCancelled) else { return }
-                    self?.snapshot.ollama = .running(detail, progress: progress)
+                    guard let self, self.setupGeneration == generation else { return }
+                    self.snapshot.ollama = .running(detail, progress: progress)
                 }
             }
             guard !Task.isCancelled else { return }
             if pulled {
                 updateOllama(.success("Ollama model \(ollamaModel) is ready."))
+                // Load the freshly pulled model into memory so the first
+                // dictation doesn't stall on a multi-second model load.
+                Task.detached { await GemmaOllamaProvider(model: ollamaModel).warmUp() }
             } else {
-                updateOllama(.actionRequired("Ollama could not prepare \(ollamaModel)."))
+                updateOllama(.actionRequired("Couldn't download \(ollamaModel). Check the model name and your internet connection, then hit Retry Setup."))
             }
         } catch {
             guard !Task.isCancelled else { return }
-            updateOllama(.actionRequired("Ollama could not prepare \(ollamaModel)."))
+            updateOllama(.actionRequired("Couldn't download \(ollamaModel). Check the model name and your internet connection, then hit Retry Setup."))
+        }
+    }
+
+    /// Re-runs setup automatically once `condition` becomes true — e.g. the user
+    /// finishes installing Ollama — so nobody has to find the Retry button.
+    private func watchForOllama(generation: Int, condition: @Sendable @escaping () async -> Bool) {
+        ollamaWatcher?.cancel()
+        ollamaWatcher = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard let self, !Task.isCancelled, self.setupGeneration == generation else { return }
+                if await condition() {
+                    self.startAutomaticSetup(force: true)
+                    return
+                }
+            }
         }
     }
 
@@ -464,15 +421,5 @@ final class DependencySetupCoordinator: ObservableObject {
 
     private func updateAppleIntelligence(_ state: DependencySetupState) {
         snapshot.appleIntelligence = state
-    }
-
-    private func updateGeminiCLI(_ state: DependencySetupState) {
-        snapshot.geminiCLI = state
-        snapshot.geminiModel = settings.geminiModel
-    }
-
-    private func updateCodexCLI(_ state: DependencySetupState) {
-        snapshot.codexCLI = state
-        snapshot.codexModel = settings.codexModel
     }
 }

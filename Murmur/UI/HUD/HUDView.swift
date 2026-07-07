@@ -12,12 +12,13 @@ struct HUDView: View {
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.45), radius: 14, x: 0, y: 6)
             .animation(.easeInOut(duration: 0.18), value: stageKey)
+            .animation(.easeInOut(duration: 0.25), value: vm.partialText.isEmpty)
     }
 
     private var width: CGFloat {
         switch vm.stage {
         case .idle: return 0
-        case .recording: return 140
+        case .recording: return vm.partialText.isEmpty ? 140 : 440
         case .loadingModel: return 280
         case .transcribing: return 150
         case .cleaning: return 170
@@ -46,10 +47,25 @@ struct HUDView: View {
         case .idle:
             EmptyView()
         case .recording:
-            Waveform(level: vm.level)
+            if vm.partialText.isEmpty {
+                Waveform(level: vm.level)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .frame(height: 18)
+                    .padding(.horizontal, 22)
+            } else {
+                HStack(spacing: 10) {
+                    Waveform(level: vm.level)
+                        .frame(width: 54, height: 16)
+                    Text(vm.partialText)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .lineLimit(1)
+                        .truncationMode(.head) // keep the latest words visible
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .frame(height: 18)
-                .padding(.horizontal, 22)
+            }
         case .loadingModel:
             inlineLabel(spinner: true, text: "Downloading model…")
         case .transcribing:

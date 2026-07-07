@@ -12,17 +12,20 @@ struct SettingsStoreTests {
     @Test("default values when unset")
     func defaultsWhenUnset() {
         let s = store
-        #expect(s.maxRecordingSeconds == 60)
+        #expect(s.maxRecordingSeconds == 300)
         #expect(s.microphoneDeviceUID == nil)
-        #expect(s.cleanupFallbackEnabled == true)
+        #expect(s.cleanupFallbackEnabled == false)
         #expect(s.transcriptionProvider == .whisperLocal)
-        #expect(s.primaryCleanupProvider == .groqAPI)
-        #expect(s.secondaryCleanupProvider == CleanupProviderOption.defaultFallback)
+        // Zero-config default: Apple Intelligence when this Mac supports it,
+        // otherwise Groq; no implicit secondary that nags for install/keys.
+        let expectedPrimary: CleanupProviderOption =
+            CleanupProviderOption.appleIntelligenceUsable ? .appleFoundationModels : .groqAPI
+        #expect(s.primaryCleanupProvider == expectedPrimary)
+        #expect(s.secondaryCleanupProvider == nil)
         #expect(s.saveHistory == false)
         #expect(s.appOverrides.isEmpty)
         #expect(s.whisperModel == "openai_whisper-small.en")
         #expect(s.groqTranscriptionModel == "whisper-large-v3-turbo")
-        #expect(s.codexModel == "gpt-5.4-mini")
         #expect(s.hotkeyShortcut == .default)
         #expect(s.automaticUpdateChecks == true)
         #expect(s.lastUpdateCheckAt == nil)
@@ -37,8 +40,7 @@ struct SettingsStoreTests {
         s.transcriptionProvider = .groqAPI
         s.groqTranscriptionModel = "whisper-large-v3"
         s.primaryCleanupProvider = .ollamaLocal
-        s.secondaryCleanupProvider = .codexCLI
-        s.codexModel = "gpt-5.4"
+        s.secondaryCleanupProvider = .groqAPI
         s.hotkeyShortcut = HotkeyShortcut(keyCode: 49, modifiers: [.control, .option])
         let checkedAt = Date(timeIntervalSince1970: 1234)
         s.automaticUpdateChecks = false
@@ -51,8 +53,7 @@ struct SettingsStoreTests {
         #expect(s2.transcriptionProvider == .groqAPI)
         #expect(s2.groqTranscriptionModel == "whisper-large-v3")
         #expect(s2.primaryCleanupProvider == .ollamaLocal)
-        #expect(s2.secondaryCleanupProvider == .codexCLI)
-        #expect(s2.codexModel == "gpt-5.4")
+        #expect(s2.secondaryCleanupProvider == .groqAPI)
         #expect(s2.hotkeyShortcut == HotkeyShortcut(keyCode: 49, modifiers: [.control, .option]))
         #expect(s2.automaticUpdateChecks == false)
         #expect(s2.lastUpdateCheckAt == checkedAt)

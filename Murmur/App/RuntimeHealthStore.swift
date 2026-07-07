@@ -48,6 +48,12 @@ final class RuntimeHealthStore: ObservableObject {
 
     private let settings: SettingsStore
     private var refreshTask: Task<Void, Never>?
+    // Permission checks are cheap and stay on the fast poll (onboarding depends on
+    // catching the AX grant quickly); the Ollama HTTP probe is throttled so the app
+    // isn't hitting localhost every 1.5s for its whole lifetime.
+    private var lastOllamaProbe: Date = .distantPast
+    private var lastOllamaReachable = false
+    private let ollamaProbeInterval: TimeInterval = 15
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -75,6 +81,7 @@ final class RuntimeHealthStore: ObservableObject {
 
     func refreshNow() {
         refreshTask?.cancel()
+        lastOllamaProbe = .distantPast
         refreshTask = Task { [weak self] in
             guard let self else { return }
             await refresh()
@@ -92,9 +99,15 @@ final class RuntimeHealthStore: ObservableObject {
     private func refresh() async {
         let microphoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         let accessibilityGranted = AXIsProcessTrusted()
-        let localCleanupReachable = settings.usesLocalOllama
-            ? await GemmaOllamaProvider.isReachable()
-            : false
+        if settings.usesLocalOllama {
+            if Date().timeIntervalSince(lastOllamaProbe) >= ollamaProbeInterval {
+                lastOllamaReachable = await GemmaOllamaProvider.isReachable()
+                lastOllamaProbe = Date()
+            }
+        } else {
+            lastOllamaReachable = false
+        }
+        let localCleanupReachable = lastOllamaReachable
 
         snapshot = RuntimeHealthSnapshot(
             microphoneGranted: microphoneGranted,

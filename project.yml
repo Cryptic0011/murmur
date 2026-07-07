@@ -3,6 +3,9 @@ packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
     from: "0.18.0"
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    from: "0.12.4"
 options:
   bundleIdPrefix: com.murmur
   deploymentTarget:
@@ -29,6 +32,7 @@ targets:
           - AppIcon.icns
     dependencies:
       - package: WhisperKit
+      - package: FluidAudio
     info:
       path: Murmur/Info.plist
       properties:
@@ -39,6 +43,9 @@ targets:
         MurmurUpdateRepository: "$(MURMUR_UPDATE_REPOSITORY)"
         MurmurUpdateReleasesPageURL: "$(MURMUR_UPDATE_RELEASES_PAGE_URL)"
         MurmurUpdateCheckIntervalHours: "$(MURMUR_UPDATE_CHECK_INTERVAL_HOURS)"
+        CFBundleURLTypes:
+          - CFBundleURLName: com.murmur.Murmur
+            CFBundleURLSchemes: [murmur]
     entitlements:
       path: Murmur/Murmur.entitlements
       properties:

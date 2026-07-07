@@ -12,9 +12,11 @@ struct AppVersion: Comparable, CustomStringConvertible, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
         self.normalizedValue = normalized
+        // Parse leading digits per component so "1.2.3-rc1" reads as [1, 2, 3]
+        // instead of collapsing the suffixed component to 0.
         self.components = normalized
             .split(separator: ".")
-            .map { Int($0) ?? 0 }
+            .map { Int($0.prefix(while: \.isNumber)) ?? 0 }
     }
 
     static func < (lhs: AppVersion, rhs: AppVersion) -> Bool {
@@ -96,7 +98,8 @@ struct UpdateRelease: Decodable, Sendable {
     var version: AppVersion { AppVersion(tagName) }
 
     var preferredDownloadURL: URL {
-        if let dmg = assets.first(where: { $0.name.localizedCaseInsensitiveContains(".dmg") }) {
+        // Suffix match — a contains() check picks up "Murmur.dmg.sha256" first.
+        if let dmg = assets.first(where: { $0.name.lowercased().hasSuffix(".dmg") }) {
             return dmg.browserDownloadURL
         }
         return htmlURL
@@ -203,6 +206,9 @@ final class UpdateManager: ObservableObject {
         }
 
         status = .checking
+        // Record the attempt, not the success — otherwise a persistently failing
+        // check retries on every launch against GitHub's unauthenticated rate limit.
+        settings.lastUpdateCheckAt = now()
 
         do {
             var request = URLRequest(url: url)
@@ -219,7 +225,6 @@ final class UpdateManager: ObservableObject {
 
             let release = try JSONDecoder().decode(UpdateRelease.self, from: data)
             latestRelease = release
-            settings.lastUpdateCheckAt = now()
 
             let current = AppVersion(currentVersionString)
             if release.version > current {
@@ -246,6 +251,9 @@ final class UpdateManager: ObservableObject {
     }
 
     private func presentAvailableUpdateAlert(release: UpdateRelease) {
+        // Background menu-bar app: without activation the alert appears behind
+        // other apps' windows and looks like the check did nothing.
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "Update Available"
@@ -258,6 +266,7 @@ final class UpdateManager: ObservableObject {
     }
 
     private func presentInfoAlert(title: String, message: String) {
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = title

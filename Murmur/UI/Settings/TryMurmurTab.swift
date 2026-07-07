@@ -8,13 +8,9 @@ struct TryMurmurTab: View {
     @ObservedObject var setup: DependencySetupCoordinator
 
     @State private var audioDevices: [AudioInputDevice] = []
-    @State private var recorder = AudioRecorder()
+    @StateObject private var micTest = MicTestController()
     @State private var dictationRecorder = AudioRecorder()
-    @State private var meterTask: Task<Void, Never>?
     @State private var dictationTask: Task<Void, Never>?
-    @State private var micLevel: Float = 0
-    @State private var micError: String?
-    @State private var isTestingMic = false
     @State private var isRecordingDictation = false
     @State private var dictationStatus = "Record a short sample without pasting anywhere."
     @State private var dictationResult: DictationTestResult?
@@ -47,7 +43,7 @@ struct TryMurmurTab: View {
             runtimeHealth.refreshNow()
         }
         .onDisappear {
-            stopMicTest()
+            micTest.stop()
             cancelDictationTest()
         }
     }
@@ -89,9 +85,9 @@ struct TryMurmurTab: View {
         MurmurCard(title: "Microphone Test", subtitle: currentMicrophoneText) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
-                    meter(level: micLevel)
-                    Button(isTestingMic ? "Stop" : "Start Test") {
-                        isTestingMic ? stopMicTest() : startMicTest()
+                    LevelMeter(level: micTest.level, active: micTest.isRunning, width: 220)
+                    Button(micTest.isRunning ? "Stop" : "Start Test") {
+                        micTest.toggle(preferredDeviceUID: settings.microphoneDeviceUID)
                     }
                     .buttonStyle(.borderedProminent)
 
@@ -100,7 +96,7 @@ struct TryMurmurTab: View {
                     }
                 }
 
-                if let micError {
+                if let micError = micTest.error {
                     Text(micError)
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(.red)
@@ -112,12 +108,13 @@ struct TryMurmurTab: View {
     private var cleanupPreviewCard: some View {
         MurmurCard(title: "Cleanup Preview", subtitle: "Try the per-app style before changing app overrides.") {
             VStack(alignment: .leading, spacing: 14) {
-                Picker("", selection: $selectedStyle) {
+                Picker("Cleanup style", selection: $selectedStyle) {
                     ForEach(CleanupMode.allCases, id: \.self) { mode in
                         Text(mode.displayName).tag(mode)
                     }
                 }
                 .labelsHidden()
+                .accessibilityLabel("Cleanup style")
                 .pickerStyle(.segmented)
 
                 HStack(alignment: .top, spacing: 14) {
@@ -148,8 +145,7 @@ struct TryMurmurTab: View {
 
                 HStack {
                     Button("Copy Cleaned Text") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(cleanedPreview, forType: .string)
+                        NSPasteboard.copyString(cleanedPreview)
                         copyStatus = "Copied."
                     }
                     .disabled(cleanedPreview.isEmpty)
@@ -176,12 +172,13 @@ struct TryMurmurTab: View {
         MurmurCard(title: "Live Dictation Test", subtitle: "Record, transcribe, and clean without pasting.") {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 12) {
-                    Picker("", selection: $selectedStyle) {
+                    Picker("Cleanup style", selection: $selectedStyle) {
                         ForEach(CleanupMode.allCases, id: \.self) { mode in
                             Text(mode.displayName).tag(mode)
                         }
                     }
                     .labelsHidden()
+                    .accessibilityLabel("Cleanup style")
                     .frame(width: 180)
 
                     Button(isRecordingDictation ? "Stop and Transcribe" : "Record Test") {
@@ -222,8 +219,7 @@ struct TryMurmurTab: View {
                         }
 
                         Button("Copy Cleaned Result") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(dictationResult.cleaned, forType: .string)
+                            NSPasteboard.copyString(dictationResult.cleaned)
                             dictationStatus = "Copied cleaned result."
                         }
                     }
@@ -279,44 +275,8 @@ struct TryMurmurTab: View {
         audioDevices = AudioInputDeviceManager.devices()
     }
 
-    private func startMicTest() {
-        stopMicTest()
-        micError = nil
-        micLevel = 0
-        isTestingMic = true
-
-        let recorder = recorder
-        meterTask = Task { @MainActor in
-            do {
-                try await recorder.start(maxSeconds: 30)
-                while !Task.isCancelled {
-                    micLevel = await recorder.currentLevel()
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                }
-            } catch {
-                micError = "Microphone test failed: \(error.localizedDescription)"
-            }
-            _ = await recorder.stop()
-            micLevel = 0
-            isTestingMic = false
-        }
-    }
-
-    private func stopMicTest() {
-        meterTask?.cancel()
-        meterTask = nil
-        let recorder = recorder
-        Task {
-            _ = await recorder.stop()
-            await MainActor.run {
-                micLevel = 0
-                isTestingMic = false
-            }
-        }
-    }
-
     private func startDictationTest() {
-        stopMicTest()
+        micTest.stop()
         dictationTask?.cancel()
         dictationResult = nil
         dictationError = nil
@@ -326,7 +286,7 @@ struct TryMurmurTab: View {
         let recorder = dictationRecorder
         dictationTask = Task { @MainActor in
             do {
-                try await recorder.start(maxSeconds: 15)
+                try await recorder.start(maxSeconds: 15, preferredDeviceUID: settings.microphoneDeviceUID)
             } catch {
                 dictationError = "Could not start recording: \(error.localizedDescription)"
                 dictationStatus = "Recording failed."
@@ -346,7 +306,7 @@ struct TryMurmurTab: View {
         dictationTask = Task { @MainActor in
             let samples = await recorder.stop()
             do {
-                let apiKey = (try? KeychainStore(service: "com.murmur.app", account: "groq-api-key").get()) ?? ""
+                let apiKey = (try? KeychainStore.groqAPIKey.get()) ?? ""
                 let providers = ProviderFactory.makeProviders(settings: settings, apiKey: apiKey)
                 let pipeline = DictationTestPipeline(
                     transcriber: providers.transcriber,
@@ -407,17 +367,4 @@ struct TryMurmurTab: View {
         }
     }
 
-    private func meter(level: Float) -> some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.black.opacity(0.08))
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(isTestingMic ? Color.green : Color.secondary.opacity(0.35))
-                    .frame(width: max(8, proxy.size.width * CGFloat(min(max(level, 0), 1))))
-            }
-        }
-        .frame(width: 220, height: 10)
-        .accessibilityLabel("Microphone input level")
-    }
 }

@@ -3,24 +3,44 @@ import Foundation
 actor GroqTranscriptionProvider: TranscriptionProvider {
     nonisolated let displayName = "Groq API"
 
-    enum GroqTranscriptionError: Error {
-        case badStatus(Int)
+    enum GroqTranscriptionError: Error, LocalizedError {
+        case badStatus(Int, message: String?)
         case missingAPIKey
         case decodeFailed
+
+        var errorDescription: String? {
+            switch self {
+            case let .badStatus(code, message):
+                if let message, !message.isEmpty { return "Groq: \(message) (HTTP \(code))" }
+                return "Groq returned HTTP \(code)."
+            case .missingAPIKey: return "No Groq API key is saved."
+            case .decodeFailed: return "Groq returned an empty transcription."
+            }
+        }
+    }
+
+    /// Groq's error payload: {"error": {"message": "..."}}
+    private struct ErrorWire: Decodable {
+        struct Inner: Decodable { let message: String? }
+        let error: Inner?
     }
 
     private let apiKey: String
     private let model: String
+    private let prompt: String?
     private let timeout: TimeInterval
     private let urlSession: URLSession
 
-    init(apiKey: String, model: String, timeout: TimeInterval = 30.0) {
+    init(apiKey: String, model: String, prompt: String? = nil, timeout: TimeInterval = 30.0) {
         self.apiKey = apiKey
         self.model = model
+        self.prompt = prompt
         self.timeout = timeout
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = timeout
-        cfg.timeoutIntervalForResource = timeout
+        // Request timeout is idle time; the resource timeout bounds the whole
+        // transfer — a ~2MB WAV on a slow uplink needs far more than 30s.
+        cfg.timeoutIntervalForResource = max(timeout * 4, 120)
         self.urlSession = URLSession(configuration: cfg)
     }
 
@@ -35,8 +55,13 @@ actor GroqTranscriptionProvider: TranscriptionProvider {
         req.httpBody = buildMultipartBody(boundary: boundary, audioData: wavData(from: samples, sampleRate: Int(sampleRate)))
 
         let (data, response) = try await urlSession.data(for: req)
-        guard let http = response as? HTTPURLResponse else { throw GroqTranscriptionError.badStatus(0) }
-        guard (200..<300).contains(http.statusCode) else { throw GroqTranscriptionError.badStatus(http.statusCode) }
+        guard let http = response as? HTTPURLResponse else {
+            throw GroqTranscriptionError.badStatus(0, message: nil)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = (try? JSONDecoder().decode(ErrorWire.self, from: data))?.error?.message
+            throw GroqTranscriptionError.badStatus(http.statusCode, message: message)
+        }
 
         struct Wire: Decodable { let text: String }
         let wire = try JSONDecoder().decode(Wire.self, from: data)
@@ -60,6 +85,12 @@ actor GroqTranscriptionProvider: TranscriptionProvider {
         append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
         append("json\r\n")
 
+        if let prompt, !prompt.isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+            append("\(prompt)\r\n")
+        }
+
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"file\"; filename=\"murmur.wav\"\r\n")
         append("Content-Type: audio/wav\r\n\r\n")
@@ -70,7 +101,8 @@ actor GroqTranscriptionProvider: TranscriptionProvider {
         return body
     }
 
-    private func wavData(from samples: [Float], sampleRate: Int) -> Data {
+    // Internal for tests — the header math is byte-exact and easy to regress.
+    func wavData(from samples: [Float], sampleRate: Int) -> Data {
         let pcm = samples.map { sample -> Int16 in
             let clamped = max(-1.0, min(1.0, sample))
             return Int16(clamped * Float(Int16.max))
@@ -112,9 +144,10 @@ actor GroqTranscriptionProvider: TranscriptionProvider {
         appendString("data")
         appendUInt32(UInt32(dataSize))
 
-        pcm.forEach { sample in
-            var littleEndian = sample.littleEndian
-            data.append(Data(bytes: &littleEndian, count: bytesPerSample))
+        // One bulk append — per-sample Data.append is ~2M calls for a 60s clip.
+        let littleEndianPCM = pcm.map(\.littleEndian)
+        littleEndianPCM.withUnsafeBufferPointer { buf in
+            data.append(UnsafeRawBufferPointer(buf).bindMemory(to: UInt8.self))
         }
 
         return data

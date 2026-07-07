@@ -22,7 +22,11 @@ final class Paster {
         }
     }
 
-    private let restoreDelay: UInt64 = 200_000_000 // 200ms
+    private let confirmDelay: UInt64 = 200_000_000 // 200ms before checking AXValue
+    /// Extra wait before restoring the clipboard when the target's AXValue can't
+    /// confirm the paste (Electron/web/terminals) — apps that service Cmd-V lazily
+    /// read the pasteboard late, and restoring too early pastes the old clipboard.
+    private let unverifiedRestoreDelay: UInt64 = 800_000_000 // 800ms
     private let log = Logger(subsystem: "com.murmur.app", category: "paste")
 
     func paste(_ text: String) async -> PasteOutcome {
@@ -50,22 +54,55 @@ final class Paster {
         sendCmdV()
         log.info("Paste injected into focused element: \(target.description, privacy: .public)")
 
-        try? await Task.sleep(nanoseconds: restoreDelay)
-        guard pasteWasConfirmed(into: target, insertedText: text) else {
-            log.info("Paste could not be confirmed; leaving dictated text on clipboard")
+        try? await Task.sleep(nanoseconds: confirmDelay)
+        switch pasteConfirmation(into: target, insertedText: text) {
+        case .notPasted:
+            log.info("Target value unchanged; leaving dictated text on clipboard")
             return .copiedOnly("Paste attempted — text remains on clipboard for manual paste")
+        case .unverifiable:
+            // Target exposes no readable AXValue; the paste almost certainly landed
+            // (we had an editable target and sent Cmd-V), so still restore the
+            // user's clipboard — after a grace period for lazy pasteboard readers.
+            try? await Task.sleep(nanoseconds: unverifiedRestoreDelay)
+        case .confirmed:
+            break
         }
 
-        if pb.changeCount == murmurPasteboardChange {
-            pb.clearContents()
-            let restored: [NSPasteboardItem] = priorContents.map { dict in
-                let it = NSPasteboardItem()
-                for (type, data) in dict { it.setData(data, forType: type) }
-                return it
-            }
-            if !restored.isEmpty { pb.writeObjects(restored) }
-        }
+        restore(priorContents, to: pb, ifChangeCountStill: murmurPasteboardChange)
         return .pasted(target.description)
+    }
+
+    private func restore(
+        _ priorContents: [[NSPasteboard.PasteboardType: Data]],
+        to pb: NSPasteboard,
+        ifChangeCountStill murmurPasteboardChange: Int
+    ) {
+        guard pb.changeCount == murmurPasteboardChange else { return }
+        pb.clearContents()
+        let restored: [NSPasteboardItem] = priorContents.map { dict in
+            let it = NSPasteboardItem()
+            for (type, data) in dict { it.setData(data, forType: type) }
+            return it
+        }
+        if !restored.isEmpty { pb.writeObjects(restored) }
+    }
+
+    /// Tail of the focused editable field's current text, for cleanup context.
+    func focusedFieldText(maxLength: Int = 600) -> String? {
+        guard let target = focusedEditableTarget(),
+              let value = target.valueBeforePaste,
+              !value.isEmpty
+        else { return nil }
+        return String(value.suffix(maxLength))
+    }
+
+    /// Press Return in the focused app — used for auto-send after a paste.
+    func pressReturn() {
+        let src = CGEventSource(stateID: .combinedSessionState)
+        let down = CGEvent(keyboardEventSource: src, virtualKey: 0x24, keyDown: true)
+        let up = CGEvent(keyboardEventSource: src, virtualKey: 0x24, keyDown: false)
+        down?.post(tap: .cgAnnotatedSessionEventTap)
+        up?.post(tap: .cgAnnotatedSessionEventTap)
     }
 
     private func sendCmdV() {
@@ -146,12 +183,23 @@ final class Paster {
         return false
     }
 
-    private func pasteWasConfirmed(into target: PasteTarget, insertedText text: String) -> Bool {
+    private enum PasteConfirmation {
+        case confirmed
+        case notPasted
+        /// The target exposes no readable AXValue (web areas, Electron, terminals) —
+        /// absence of evidence, not evidence the paste failed.
+        case unverifiable
+    }
+
+    private func pasteConfirmation(into target: PasteTarget, insertedText text: String) -> PasteConfirmation {
         guard let valueBeforePaste = target.valueBeforePaste,
               let valueAfterPaste = stringAttribute(kAXValueAttribute, of: target.element)
-        else { return false }
-        guard valueAfterPaste != valueBeforePaste else { return false }
-        return valueAfterPaste.contains(text) || valueAfterPaste.count >= valueBeforePaste.count + min(text.count, 1)
+        else { return .unverifiable }
+        guard valueAfterPaste != valueBeforePaste else { return .notPasted }
+        if valueAfterPaste.contains(text) || valueAfterPaste.count > valueBeforePaste.count {
+            return .confirmed
+        }
+        return .unverifiable
     }
 
     private func stringAttribute(_ name: String, of element: AXUIElement) -> String? {

@@ -21,12 +21,36 @@ struct ProviderFactoryTests {
     @Test("creates primary and fallback cleanup providers")
     func createsCleanupProviders() {
         let settings = SettingsStore(defaults: defaults)
-        settings.primaryCleanupProvider = .codexCLI
-        settings.secondaryCleanupProvider = .geminiCLI
+        settings.primaryCleanupProvider = .groqAPI
+        settings.secondaryCleanupProvider = .ollamaLocal
 
         let providers = ProviderFactory.makeProviders(settings: settings, apiKey: "test-key")
 
-        #expect(providers.primaryCleanup.displayName == "ChatGPT via Codex CLI")
-        #expect(providers.fallbackCleanup?.displayName == "Gemini CLI")
+        #expect(providers.primaryCleanup.displayName == "Groq")
+        #expect(providers.fallbackCleanup?.displayName == "Ollama (local)")
+    }
+
+    @Test("removed CLI provider raw values coerce to local defaults")
+    func removedCLIProvidersCoerce() {
+        let settings = SettingsStore(defaults: defaults)
+        defaults.set("codexCLI", forKey: "primaryCleanupProvider")
+        defaults.set("geminiCLI", forKey: "secondaryCleanupProvider")
+
+        #expect(settings.primaryCleanupProvider == CleanupProviderOption.defaultFallback)
+        // The invalid secondary coerces to the same local default as the
+        // primary, and a fallback identical to the primary is dropped.
+        #expect(settings.secondaryCleanupProvider == nil)
+    }
+
+    @Test("empty API key still constructs providers that fail cleanly")
+    func emptyAPIKeyConstructsProviders() async {
+        let settings = SettingsStore(defaults: defaults)
+        settings.primaryCleanupProvider = .groqAPI
+        settings.secondaryCleanupProvider = nil
+
+        let providers = ProviderFactory.makeProviders(settings: settings, apiKey: "")
+        await #expect(throws: OpenAICompatibleProvider.ProviderError.missingAPIKey) {
+            _ = try await providers.primaryCleanup.clean(text: "hello there world", mode: .prose)
+        }
     }
 }

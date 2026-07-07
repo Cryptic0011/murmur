@@ -28,12 +28,55 @@ struct DictationOrchestratorTests {
             detector: ContextDetector(defaults: [:], userOverrides: []),
             paste: { _ in .pasted() },
             onStage: { recorder.record($0) },
-            history: nil
+            history: nil,
+            llmCleanupWordThreshold: 0
         )
         await orch.runForTesting(samples: [0.1, 0.2], sampleRate: 16_000, didOverflow: false)
         #expect(recorder.stages.contains(.transcribing))
         #expect(recorder.stages.contains(.cleaning(provider: "Groq")))
         #expect(recorder.stages.contains(.pasted(words: 2)))
+    }
+
+    @MainActor
+    @Test("short dictation skips LLM cleanup")
+    func shortDictationSkipsLLM() async throws {
+        let recorder = StageRecorder()
+        let cleanup = MockCleanupProvider(name: "Groq", responses: [.success("should not be used")])
+        let orch = DictationOrchestrator(
+            transcriber: MockTranscriber(.success("send it over now please")),
+            primary: cleanup,
+            fallback: nil,
+            detector: ContextDetector(defaults: [:], userOverrides: []),
+            paste: { _ in .pasted() },
+            onStage: { recorder.record($0) },
+            history: nil
+        )
+        await orch.runForTesting(samples: [0.1, 0.2], sampleRate: 16_000, didOverflow: false)
+        let cleanedViaLLM = recorder.stages.contains { if case .cleaning = $0 { return true } else { return false } }
+        #expect(!cleanedViaLLM)
+        #expect(await cleanup.callCount() == 0)
+        #expect(recorder.stages.contains(.pasted(words: 5)))
+    }
+
+    @MainActor
+    @Test("vocabulary and field context reach the cleanup provider")
+    func contextReachesProvider() async throws {
+        let cleanup = MockCleanupProvider(name: "Groq", responses: [.success("Cleaned.")])
+        let orch = DictationOrchestrator(
+            transcriber: MockTranscriber(.success("hello world")),
+            primary: cleanup,
+            fallback: nil,
+            detector: ContextDetector(defaults: [:], userOverrides: []),
+            paste: { _ in .pasted() },
+            onStage: { _ in },
+            history: nil,
+            vocabulary: ["Murmur"],
+            fieldContext: { "Hi team," },
+            llmCleanupWordThreshold: 0
+        )
+        await orch.runForTesting(samples: [0.1], sampleRate: 16_000, didOverflow: false)
+        let context = await cleanup.calls.first?.context
+        #expect(context == CleanupContext(fieldText: "Hi team,", vocabulary: ["Murmur"]))
     }
 
     @MainActor
@@ -47,7 +90,8 @@ struct DictationOrchestratorTests {
             detector: ContextDetector(defaults: [:], userOverrides: []),
             paste: { _ in .pasted() },
             onStage: { recorder.record($0) },
-            history: nil
+            history: nil,
+            llmCleanupWordThreshold: 0
         )
         await orch.runForTesting(samples: [0.1], sampleRate: 16_000, didOverflow: false)
         #expect(recorder.stages.contains(.cleaning(provider: "Gemma")))
@@ -65,7 +109,8 @@ struct DictationOrchestratorTests {
             detector: ContextDetector(defaults: [:], userOverrides: []),
             paste: { _ in .pasted() },
             onStage: { recorder.record($0) },
-            history: nil
+            history: nil,
+            llmCleanupWordThreshold: 0
         )
         await orch.runForTesting(samples: [0.1], sampleRate: 16_000, didOverflow: false)
         #expect(recorder.stages.contains(.pasted(words: 3)))

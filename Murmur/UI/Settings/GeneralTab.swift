@@ -11,11 +11,7 @@ struct GeneralTab: View {
     @State private var capturePreview = "Hold modifiers, then press a key"
     @State private var launchAtLoginError: String?
     @State private var audioDevices: [AudioInputDevice] = []
-    @State private var micTestRecorder = AudioRecorder()
-    @State private var micTestTask: Task<Void, Never>?
-    @State private var micTestLevel: Float = 0
-    @State private var micTestError: String?
-    @State private var isTestingMicrophone = false
+    @StateObject private var micTest = MicTestController()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -39,21 +35,72 @@ struct GeneralTab: View {
                             get: { Double(settings.maxRecordingSeconds) },
                             set: { settings.maxRecordingSeconds = Int($0.rounded()) }
                         ),
-                        in: 10...300,
-                        step: 10
+                        in: 30...600,
+                        step: 30
                     )
+
+                    Toggle("Mute other audio while recording", isOn: Binding(
+                        get: { settings.muteWhileRecording },
+                        set: { settings.muteWhileRecording = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    Text("Silences speakers during dictation so music or videos don't bleed into the microphone, then restores the previous state.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            MurmurCard(title: "Microphone", subtitle: "Murmur follows the Mac's current system input.") {
+            MurmurCard(title: "Pasting", subtitle: "What happens after your dictation is cleaned up.") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Toggle("Press Return after pasting", isOn: Binding(
+                        get: { settings.returnAfterPaste },
+                        set: { settings.returnAfterPaste = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    Text("Sends the message automatically in chat apps like Slack or Messages. Use with care — it presses Return wherever you're typing.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Toggle("Add a space after pasted text", isOn: Binding(
+                        get: { settings.appendTrailingSpace },
+                        set: { settings.appendTrailingSpace = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    Text("Consecutive dictations flow together without touching the keyboard.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            MurmurCard(title: "Microphone", subtitle: "Follow the Mac's system input or pin dictation to a specific mic.") {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(alignment: .top, spacing: 14) {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("System input")
+                            Text("Input device")
                                 .font(.system(size: 13, weight: .bold, design: .rounded))
+                            Picker("Input device", selection: Binding(
+                                get: { settings.microphoneDeviceUID ?? "" },
+                                set: { settings.microphoneDeviceUID = $0.isEmpty ? nil : $0 }
+                            )) {
+                                Text("System default — \(systemDefaultName)").tag("")
+                                ForEach(audioDevices) { device in
+                                    Text("\(device.name) · \(device.transport)").tag(device.uid)
+                                }
+                                if let uid = settings.microphoneDeviceUID,
+                                   !audioDevices.contains(where: { $0.uid == uid }) {
+                                    Text("Saved microphone (not connected)").tag(uid)
+                                }
+                            }
+                            .labelsHidden()
+                            .accessibilityLabel("Input device")
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: 360, alignment: .leading)
                             Text(microphoneDetailText)
                                 .font(.system(size: 12, weight: .medium, design: .rounded))
                                 .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer()
                         Button("Refresh") { refreshAudioDevices() }
@@ -61,14 +108,14 @@ struct GeneralTab: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 10) {
-                            microphoneMeter(level: micTestLevel)
-                            Button(isTestingMicrophone ? "Stop Test" : "Test Microphone") {
-                                isTestingMicrophone ? stopMicrophoneTest() : startMicrophoneTest()
+                            LevelMeter(level: micTest.level, active: micTest.isRunning)
+                            Button(micTest.isRunning ? "Stop Test" : "Test Microphone") {
+                                micTest.toggle(preferredDeviceUID: settings.microphoneDeviceUID)
                             }
                             .buttonStyle(.borderedProminent)
                         }
 
-                        if let micTestError {
+                        if let micTestError = micTest.error {
                             Text(micTestError)
                                 .font(.system(size: 12, weight: .medium, design: .rounded))
                                 .foregroundStyle(.red)
@@ -77,10 +124,31 @@ struct GeneralTab: View {
                 }
             }
 
-            MurmurCard(title: "Hotkey", subtitle: "Choose the push-to-talk key and whether Murmur is active.") {
+            MurmurCard(title: "Hotkey", subtitle: "Choose the dictation key, how it activates, and whether Murmur is active.") {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Push-to-talk key")
+                        Text("Activation")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                        Picker("Activation", selection: Binding(
+                            get: { settings.toggleMode },
+                            set: { settings.toggleMode = $0 }
+                        )) {
+                            Text("Hold to talk").tag(false)
+                            Text("Tap to toggle").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .accessibilityLabel("Activation mode")
+                        .frame(maxWidth: 280)
+                        Text(settings.toggleMode
+                             ? "Tap the hotkey to start recording, tap again to finish. Esc cancels."
+                             : "Hold the hotkey while speaking; release to finish. Esc cancels.")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Dictation key")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                         VStack(alignment: .leading, spacing: 12) {
                             HStack(spacing: 12) {
@@ -102,6 +170,8 @@ struct GeneralTab: View {
                                         supportedKeyPill(option: option, selected: option.shortcut == settings.hotkeyShortcut)
                                     }
                                     .buttonStyle(.plain)
+                                    .accessibilityLabel(option.label)
+                                    .accessibilityAddTraits(option.shortcut == settings.hotkeyShortcut ? .isSelected : [])
                                 }
                             }
                         }
@@ -151,56 +221,23 @@ struct GeneralTab: View {
         }
         .onDisappear {
             stopCapture()
-            stopMicrophoneTest()
+            micTest.stop()
         }
     }
 
+    private var systemDefaultName: String {
+        audioDevices.first(where: \.isSystemDefault)?.name ?? "current macOS input"
+    }
+
     private var microphoneDetailText: String {
-        if let current = audioDevices.first(where: \.isSystemDefault) {
-            return "Using the Mac's current default input: \(current.name). Change it in macOS Sound settings."
+        if settings.microphoneDeviceUID != nil {
+            return "Murmur records from this mic whenever it's connected and falls back to the system default when it isn't. Note: using AirPods as the microphone switches them to call-audio quality."
         }
-        return "Using the Mac's current default input. Change it in macOS Sound settings."
+        return "Following the Mac's default input — change it in macOS Sound settings, or pin a specific mic here."
     }
 
     private func refreshAudioDevices() {
         audioDevices = AudioInputDeviceManager.devices()
-    }
-
-    private func startMicrophoneTest() {
-        stopMicrophoneTest()
-        micTestError = nil
-        micTestLevel = 0
-        isTestingMicrophone = true
-
-        let recorder = micTestRecorder
-        micTestTask = Task { @MainActor in
-            do {
-                try await recorder.start(maxSeconds: 30)
-                while !Task.isCancelled {
-                    let level = await recorder.currentLevel()
-                    micTestLevel = level
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                }
-            } catch {
-                micTestError = "Could not start microphone test: \(error.localizedDescription)"
-            }
-            _ = await recorder.stop()
-            micTestLevel = 0
-            isTestingMicrophone = false
-        }
-    }
-
-    private func stopMicrophoneTest() {
-        micTestTask?.cancel()
-        micTestTask = nil
-        let recorder = micTestRecorder
-        Task {
-            _ = await recorder.stop()
-            await MainActor.run {
-                micTestLevel = 0
-                isTestingMicrophone = false
-            }
-        }
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -288,20 +325,6 @@ struct GeneralTab: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color.black.opacity(0.05))
         )
-    }
-
-    private func microphoneMeter(level: Float) -> some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.black.opacity(0.08))
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(isTestingMicrophone ? Color.green : Color.secondary.opacity(0.35))
-                    .frame(width: max(8, proxy.size.width * CGFloat(min(max(level, 0), 1))))
-            }
-        }
-        .frame(width: 180, height: 10)
-        .accessibilityLabel("Microphone input level")
     }
 
     private func supportedKeyPill(option: MurmurHotkeyOption, selected: Bool) -> some View {

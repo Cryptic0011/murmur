@@ -8,6 +8,9 @@ struct AppOverridesTab: View {
     @State private var runningAppChoices: [RunningAppChoice] = []
     @State private var selectedRunningBundleID: String?
     @State private var selectedNewMode: CleanupMode = .prose
+    // NSWorkspace/Bundle lookups hit the disk; without a cache every table row
+    // re-resolves its app name and icon on every render.
+    @State private var appInfoCache: [String: (name: String, icon: NSImage?)] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -28,7 +31,7 @@ struct AppOverridesTab: View {
                     }
                     TableColumn("Bundle ID", value: \.bundleID)
                     TableColumn("Style") { row in
-                        Picker("", selection: Binding(
+                        Picker("Cleanup style", selection: Binding(
                             get: { row.mode },
                             set: { newMode in
                                 var arr = settings.appOverrides
@@ -43,6 +46,7 @@ struct AppOverridesTab: View {
                             }
                         }
                         .labelsHidden()
+                        .accessibilityLabel("Cleanup style for \(displayName(for: row.bundleID))")
                     }
                 }
                 .frame(minHeight: 260)
@@ -172,14 +176,23 @@ struct AppOverridesTab: View {
     }
 
     private func displayName(for bundleID: String) -> String {
-        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
-            .flatMap { Bundle(url: $0)?.object(forInfoDictionaryKey: "CFBundleName") as? String }
-            ?? bundleID
+        appInfo(for: bundleID).name
     }
 
     private func icon(for bundleID: String) -> NSImage? {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
-        return NSWorkspace.shared.icon(forFile: url.path)
+        appInfo(for: bundleID).icon
+    }
+
+    private func appInfo(for bundleID: String) -> (name: String, icon: NSImage?) {
+        if let cached = appInfoCache[bundleID] { return cached }
+        let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        let name = url
+            .flatMap { Bundle(url: $0)?.object(forInfoDictionaryKey: "CFBundleName") as? String }
+            ?? bundleID
+        let icon = url.map { NSWorkspace.shared.icon(forFile: $0.path) }
+        let info = (name: name, icon: icon)
+        DispatchQueue.main.async { appInfoCache[bundleID] = info }
+        return info
     }
 
     private struct RunningAppChoice: Identifiable {

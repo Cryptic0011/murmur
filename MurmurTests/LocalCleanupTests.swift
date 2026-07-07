@@ -5,8 +5,20 @@ import Testing
 struct LocalCleanupTests {
     @Test("removes fillers and spoken punctuation in prose")
     func proseCleanup() {
-        let cleaned = LocalCleanup.clean("um hello comma i mean hello question mark", mode: .prose)
-        #expect(cleaned == "Hello?")
+        let cleaned = LocalCleanup.clean("um hello there question mark", mode: .prose)
+        #expect(cleaned == "Hello there?")
+    }
+
+    @Test("explicit correction markers cut preceding text")
+    func correctionMarkerCuts() {
+        let cleaned = LocalCleanup.clean("send it tomorrow scratch that send it friday", mode: .prose)
+        #expect(cleaned == "Send it friday.")
+    }
+
+    @Test("bare 'i mean' mid-sentence does not delete preceding text")
+    func iMeanIsNotACorrectionMarker() {
+        let cleaned = LocalCleanup.clean("the deploy failed i mean the staging deploy failed", mode: .prose)
+        #expect(cleaned.contains("deploy failed i mean the staging") || cleaned.lowercased().hasPrefix("the deploy failed"))
     }
 
     @Test("normalizes email and percentages")

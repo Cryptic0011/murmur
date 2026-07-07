@@ -33,7 +33,8 @@ struct MurmurApp: App {
                 router: AppServices.router,
                 updates: AppServices.updates
             )
-            .frame(minWidth: 1080, minHeight: 720)
+            .frame(minWidth: 780, minHeight: 520)
         }
+        .defaultSize(width: 860, height: 580)
     }
 }

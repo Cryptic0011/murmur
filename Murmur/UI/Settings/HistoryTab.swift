@@ -6,6 +6,8 @@ struct HistoryTab: View {
     @ObservedObject var settings: SettingsStore
     @State private var entries: [HistoryEntry] = []
     @State private var selection: HistoryEntry.ID?
+    @State private var confirmClearAll = false
+    @State private var storageError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -62,10 +64,15 @@ struct HistoryTab: View {
                                 .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
                         }
                         HStack {
-                            Button("Copy Raw") { copy(selectedEntry.raw) }
-                            Button("Copy Cleaned") { copy(selectedEntry.cleaned) }
-                            Button("Delete") {
-                                try? store.remove(id: selectedEntry.id)
+                            Button("Copy Raw") { NSPasteboard.copyString(selectedEntry.raw) }
+                            Button("Copy Cleaned") { NSPasteboard.copyString(selectedEntry.cleaned) }
+                            Button("Delete", role: .destructive) {
+                                do {
+                                    try store.remove(id: selectedEntry.id)
+                                    storageError = nil
+                                } catch {
+                                    storageError = "Couldn't delete entry: \(error.localizedDescription)"
+                                }
                                 reload()
                             }
                         }
@@ -73,13 +80,36 @@ struct HistoryTab: View {
                 }
             }
 
+            if let storageError {
+                Text(storageError)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.red)
+            }
+
             HStack {
                 Button("Refresh") { reload() }
                 Spacer()
                 Button("Clear All", role: .destructive) {
-                    try? store.clear(); reload()
+                    confirmClearAll = true
                 }
+                .disabled(entries.isEmpty)
             }
+        }
+        .confirmationDialog(
+            "Delete all \(entries.count) saved dictations?",
+            isPresented: $confirmClearAll,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All", role: .destructive) {
+                do {
+                    try store.clear()
+                    storageError = nil
+                } catch {
+                    storageError = "Couldn't clear history: \(error.localizedDescription)"
+                }
+                reload()
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .onAppear { reload() }
     }
@@ -93,10 +123,5 @@ struct HistoryTab: View {
         if !entries.contains(where: { $0.id == selection }) {
             selection = entries.last?.id
         }
-    }
-
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
     }
 }

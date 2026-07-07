@@ -1,7 +1,7 @@
 import Foundation
 
 actor GemmaOllamaProvider: CleanupProvider {
-    nonisolated let displayName = "Gemma (local)"
+    nonisolated let displayName = "Ollama (local)"
 
     enum OllamaError: Error { case unreachable, badStatus(Int), decodeFailed }
 
@@ -18,7 +18,7 @@ actor GemmaOllamaProvider: CleanupProvider {
         self.urlSession = URLSession(configuration: cfg)
     }
 
-    func clean(text: String, mode: CleanupMode) async throws -> String {
+    func clean(text: String, mode: CleanupMode, context: CleanupContext) async throws -> String {
         if !(await Self.isReachable(endpoint: endpoint)) {
             _ = await Self.ensureRunning(endpoint: endpoint)
         }
@@ -31,17 +31,32 @@ actor GemmaOllamaProvider: CleanupProvider {
             let model: String
             let stream: Bool
             let messages: [OpenAICompatibleChatClient.Message]
+            // Without this, each request resets the model's residency to
+            // Ollama's 5-minute default and the warmUp 30m TTL is lost.
+            let keepAlive: String
             let options: [String: Double]
+
+            enum CodingKeys: String, CodingKey {
+                case model, stream, messages, options
+                case keepAlive = "keep_alive"
+            }
         }
+        let wordCount = text.split(whereSeparator: \.isWhitespace).count
         let body = Body(
             model: model,
             stream: false,
             messages: [
-                .init(role: "system", content: PromptBuilder.systemPrompt(for: mode)),
-                .init(role: "user", content: "<transcript>\n\(text)\n</transcript>"),
+                .init(role: "system", content: PromptBuilder.systemPrompt(for: mode, context: context)),
+                .init(role: "user", content: PromptBuilder.transcriptMessage(text)),
                 .init(role: "assistant", content: PromptBuilder.assistantPrefill),
             ],
-            options: ["temperature": 0.2]
+            keepAlive: "30m",
+            options: [
+                "temperature": 0.2,
+                // Bound generation to roughly input size so a runaway model fails
+                // fast instead of running into the session timeout.
+                "num_predict": Double(max(256, wordCount * 4)),
+            ]
         )
         req.httpBody = try JSONEncoder().encode(body)
 
@@ -76,6 +91,14 @@ actor GemmaOllamaProvider: CleanupProvider {
         model: String,
         endpoint: URL = URL(string: "http://localhost:11434")!
     ) async -> Bool {
+        await installedModels(endpoint: endpoint).contains(model)
+    }
+
+    /// Names of models currently installed in the local Ollama instance
+    /// (empty when Ollama is unreachable).
+    static func installedModels(
+        endpoint: URL = URL(string: "http://localhost:11434")!
+    ) async -> [String] {
         struct TagsResponse: Decodable {
             struct Model: Decodable {
                 let name: String
@@ -88,13 +111,14 @@ actor GemmaOllamaProvider: CleanupProvider {
         req.timeoutInterval = 2
         do {
             let (data, response) = try await URLSession.shared.data(for: req)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
             let tags = try JSONDecoder().decode(TagsResponse.self, from: data)
-            return tags.models.contains {
-                $0.name == model || $0.model == model
-            }
+            var seen = Set<String>()
+            return tags.models
+                .flatMap { [$0.name, $0.model].compactMap { $0 } }
+                .filter { seen.insert($0).inserted }
         } catch {
-            return false
+            return []
         }
     }
 
@@ -175,9 +199,9 @@ actor GemmaOllamaProvider: CleanupProvider {
             "nohup '\(executable.replacingOccurrences(of: "'", with: "'\\''"))' serve >/tmp/murmur-ollama.log 2>&1 &"
         ]
 
-        let nullDevice = FileHandle(forWritingAtPath: "/dev/null")
-        process.standardOutput = nullDevice
-        process.standardError = nullDevice
+        // FileHandle would leak an fd per launch attempt; NullDevice doesn't.
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
@@ -199,9 +223,34 @@ actor GemmaOllamaProvider: CleanupProvider {
     func warmUp() async {
         let reachable = await Self.isReachable(endpoint: endpoint)
         if !reachable {
-            _ = await Self.ensureRunning(endpoint: endpoint)
+            guard await Self.ensureRunning(endpoint: endpoint) else { return }
         }
-        _ = await Self.isModelAvailable(model: model, endpoint: endpoint)
+        // /api/tags does not load the model into memory — send a tiny chat request
+        // with keep_alive so the first real cleanup skips the multi-second load.
+        struct WarmBody: Encodable {
+            let model: String
+            let stream: Bool
+            let messages: [OpenAICompatibleChatClient.Message]
+            let keepAlive: String
+            let options: [String: Double]
+
+            enum CodingKeys: String, CodingKey {
+                case model, stream, messages, options
+                case keepAlive = "keep_alive"
+            }
+        }
+        var req = URLRequest(url: endpoint.appendingPathComponent("api/chat"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 30
+        req.httpBody = try? JSONEncoder().encode(WarmBody(
+            model: model,
+            stream: false,
+            messages: [.init(role: "user", content: "hi")],
+            keepAlive: "30m",
+            options: ["num_predict": 1]
+        ))
+        _ = try? await URLSession.shared.data(for: req)
     }
 }
 

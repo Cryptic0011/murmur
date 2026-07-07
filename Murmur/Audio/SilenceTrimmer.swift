@@ -18,7 +18,10 @@ enum SilenceTrimmer {
         guard let firstActive = firstActiveIndex(samples: samples, window: windowSize, threshold: threshold),
               let lastActive = lastActiveIndex(samples: samples, window: windowSize, threshold: threshold)
         else {
-            return samples
+            // Nothing above the threshold anywhere — this is silence, not audio to
+            // pass through. Returning it all would send pure silence to a full STT
+            // round-trip (and invite hallucinated text back).
+            return []
         }
 
         let start = max(0, firstActive - pad)
