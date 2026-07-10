@@ -116,23 +116,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openSettings() { settingsCtl.show() }
     @objc private func openHistory() { settingsCtl.show(initialTab: .history) }
     @objc private func checkForUpdates() {
-        Task { @MainActor in
-            await updates.checkForUpdatesManually()
-        }
+        updates.checkForUpdatesManually()
     }
     @objc private func togglePause() {
         settings.pauseHotkey.toggle()
     }
 
     private func startRuntime() {
+        updates.start()
         hotkey.onPress = { [weak self] in self?.handlePress() }
         hotkey.onRelease = { [weak self] in self?.handleRelease() }
         hotkey.onCancel = { [weak self] in self?.handleCancel() }
         hotkey.start()
         applySettings(initialLaunch: true)
-        Task { @MainActor in
-            await updates.checkForUpdatesIfNeeded()
-        }
     }
 
     private func handlePress() {

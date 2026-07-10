@@ -220,6 +220,15 @@ struct ProvidersTab: View {
                     ))
                     .textFieldStyle(.roundedBorder)
 
+                    if let warning = OpenAICompatibleProvider.customEndpointWarning(
+                        baseURL: settings.customBaseURL
+                    ) {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     TextField("Model name", text: Binding(
                         get: { settings.customModel },
                         set: { settings.customModel = $0 }

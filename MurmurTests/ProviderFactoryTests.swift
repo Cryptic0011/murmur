@@ -54,3 +54,20 @@ struct ProviderFactoryTests {
         }
     }
 }
+
+@Suite("Custom endpoint transport security")
+struct CustomEndpointTransportSecurityTests {
+    @Test("allows HTTPS and loopback HTTP")
+    func allowsSecureTransports() {
+        #expect(OpenAICompatibleProvider.isTransportSecure(URL(string: "https://example.com/v1")!))
+        #expect(OpenAICompatibleProvider.isTransportSecure(URL(string: "http://localhost:1234/v1")!))
+        #expect(OpenAICompatibleProvider.isTransportSecure(URL(string: "http://127.0.0.1:1234/v1")!))
+        #expect(OpenAICompatibleProvider.isTransportSecure(URL(string: "http://[::1]:1234/v1")!))
+    }
+
+    @Test("blocks remote plaintext HTTP")
+    func blocksRemoteHTTP() {
+        #expect(!OpenAICompatibleProvider.isTransportSecure(URL(string: "http://example.com/v1")!))
+        #expect(OpenAICompatibleProvider.customEndpointWarning(baseURL: "http://example.com/v1") != nil)
+    }
+}

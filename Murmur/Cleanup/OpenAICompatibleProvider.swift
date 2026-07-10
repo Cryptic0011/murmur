@@ -8,6 +8,7 @@ actor OpenAICompatibleProvider: CleanupProvider {
     enum ProviderError: Error, LocalizedError, Equatable {
         case badStatus(Int, message: String?)
         case missingAPIKey
+        case insecureEndpoint
         case decodeFailed
         case rejectedByGuard
 
@@ -17,6 +18,8 @@ actor OpenAICompatibleProvider: CleanupProvider {
                 if let message, !message.isEmpty { return "\(message) (HTTP \(code))" }
                 return "Cleanup API returned HTTP \(code)."
             case .missingAPIKey: return "No API key is saved for this provider."
+            case .insecureEndpoint:
+                return "Remote custom endpoints must use HTTPS. Plain HTTP is allowed only for localhost."
             case .decodeFailed: return "Cleanup API returned an unreadable response."
             case .rejectedByGuard: return "Cleanup output failed validation."
             }
@@ -90,6 +93,7 @@ actor OpenAICompatibleProvider: CleanupProvider {
 
     func clean(text: String, mode: CleanupMode, context: CleanupContext) async throws -> String {
         guard !apiKey.isEmpty || !requiresKey else { throw ProviderError.missingAPIKey }
+        guard Self.isTransportSecure(chatEndpoint) else { throw ProviderError.insecureEndpoint }
 
         let client = OpenAICompatibleChatClient(
             endpoint: chatEndpoint,
@@ -128,6 +132,7 @@ actor OpenAICompatibleProvider: CleanupProvider {
     }
 
     func warmUp() async {
+        guard Self.isTransportSecure(modelsEndpoint) else { return }
         var req = URLRequest(url: modelsEndpoint)
         req.httpMethod = "GET"
         req.timeoutInterval = 3
@@ -135,6 +140,23 @@ actor OpenAICompatibleProvider: CleanupProvider {
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
         _ = try? await urlSession.data(for: req)
+    }
+
+    static func isTransportSecure(_ endpoint: URL) -> Bool {
+        if endpoint.scheme?.lowercased() == "https" { return true }
+        guard endpoint.scheme?.lowercased() == "http" else { return false }
+        guard let host = endpoint.host?.lowercased() else { return false }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1"
+    }
+
+    static func customEndpointWarning(baseURL: String) -> String? {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let endpoint = URL(string: trimmed), endpoint.host != nil else {
+            return "Enter a complete endpoint URL."
+        }
+        return isTransportSecure(endpoint)
+            ? nil
+            : "Remote endpoints must use HTTPS to protect transcripts and API keys."
     }
 }
 

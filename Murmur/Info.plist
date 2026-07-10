@@ -39,5 +39,13 @@
 	<string>$(MURMUR_UPDATE_REPOSITORY)</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Murmur listens to your voice while you hold the dictation hotkey, transcribes it locally, and pastes the cleaned text where you're typing.</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/Cryptic0011/murmur/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>GPa3gezkwPZ2JAkqkXxa3DDSirwWVGd7kr1/H1Uu0sY=</string>
 </dict>
 </plist>

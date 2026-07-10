@@ -19,11 +19,19 @@ Murmur is a macOS menu bar app for fast voice dictation. Hold your hotkey, speak
 - Local transcription with WhisperKit
 - Optional local transcription with Apple Speech on supported macOS versions
 - Optional API transcription and cleanup with Groq
-- Optional cleanup with Ollama, Gemini CLI OAuth, or ChatGPT via Codex CLI OAuth
+- Optional cleanup with Cerebras, Ollama, or Apple Intelligence
 - Per-app cleanup styles for prose, email, chat, notes, prompts, and code
 - Microphone picker and in-app dictation test flow
 - Visible runtime/setup state instead of silent failures
 - Automatic update checks against GitHub Releases
+
+## Privacy
+
+Murmur can run fully locally, but cloud providers receive audio or transcript
+content when you select them. API keys are stored in macOS Keychain, recorded
+audio is discarded after transcription, and local dictation history is off by
+default. See [PRIVACY.md](PRIVACY.md) for the complete data-flow and storage
+details.
 
 ## Install
 
@@ -99,7 +107,7 @@ Recommended first-run path:
 4. Open Settings
 5. Choose your transcription and cleanup providers
 6. Use `Try Murmur` to test microphone input and run a no-paste dictation test
-7. Test your provider connection if using Groq, Gemini CLI, or ChatGPT OAuth
+7. Test your provider connection if using Groq or Cerebras
 8. Try the default hotkey and adjust it if needed
 
 ## Provider Setup
@@ -127,23 +135,16 @@ https://ollama.com/download/mac
 ### Mixed
 
 - Transcription: WhisperKit
-- Cleanup: Groq, Ollama, Gemini CLI, ChatGPT OAuth, or Apple Intelligence
+- Cleanup: Groq, Cerebras, Ollama, or Apple Intelligence
 
 This is a good default if you want local speech-to-text but stronger cleanup options.
 
 ### API-backed
 
 - Transcription: Groq
-- Cleanup: Groq
+- Cleanup: Groq or Cerebras
 
 Use this if you want to avoid local model setup and you are fine with API usage.
-
-### OAuth cleanup
-
-- Transcription: WhisperKit or Groq
-- Cleanup: Gemini CLI or ChatGPT via Codex CLI
-
-Use this if you already use one of those CLIs and prefer OAuth sign-in over pasting API keys.
 
 ## Groq API Key Setup
 
@@ -186,13 +187,15 @@ If there is no editable field focused, Murmur shows the result state instead of 
 
 ## Updates
 
-Murmur checks GitHub Releases for updates on launch.
+Murmur uses Sparkle 2 to check a signed appcast hosted with GitHub Releases.
 
-- If a newer release exists, the app prompts the user to download it
-- The prompt opens the release DMG when available
-- Users update by installing the newer app build
+- New users install Murmur from the signed and notarized DMG
+- Existing users can download and install updates directly inside Murmur
+- Update archives are verified with Sparkle EdDSA signatures and Apple code signing
+- Automatic checks can be disabled in `Settings` > `About`
 
-This is a download-and-replace update flow, not an in-place auto-installer.
+Official public builds are Developer ID signed, notarized by Apple, and
+distributed with SHA-256 checksum files alongside the DMG and Sparkle appcast.
 
 ## Troubleshooting
 

@@ -224,7 +224,7 @@ final class Paster {
         if let objects = value as? [AnyObject] {
             return objects.compactMap { object in
                 guard CFGetTypeID(object) == AXUIElementGetTypeID() else { return nil }
-                return object as! AXUIElement
+                return (object as! AXUIElement)
             }
         }
         return []

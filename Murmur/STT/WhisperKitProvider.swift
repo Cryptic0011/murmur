@@ -69,9 +69,9 @@ actor WhisperKitProvider: TranscriptionProvider {
         // returning false aborts the decode when our task gets cancelled (Esc).
         let cancelFlag = CancelFlag()
         let results = try await withTaskCancellationHandler {
-            try await pipe.transcribe(audioArray: samples, decodeOptions: options) { _ in
+            try await pipe.transcribe(audioArray: samples, decodeOptions: options, callback: { _ in
                 cancelFlag.isSet ? false : nil
-            }
+            })
         } onCancel: {
             cancelFlag.set()
         }

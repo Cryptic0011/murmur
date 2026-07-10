@@ -40,6 +40,7 @@
 		5A118B367465A248EC465388 /* CleanupOutputGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BDC39020B157F104C90C3CC /* CleanupOutputGuard.swift */; };
 		5C697960F15FA0936D9AF82E /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00D97FF340878481E73D115D /* SettingsStore.swift */; };
 		658FB2EA1BD05B781415EFCB /* ContextDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DF8E7DCCC9EFB7DEE6D75BC /* ContextDetector.swift */; };
+		68CD4D751C1034533737645F /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = DECF0E8FB2D2058742D4EF03 /* Sparkle */; };
 		6DA49FB9CCA842FA4B2688C0 /* MurmurApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED35761EBF7EF881FA0E7BB9 /* MurmurApp.swift */; };
 		6E45A8E5D5FF1D279A06365C /* OverviewTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD01EA7AED8193DC18444E5D /* OverviewTab.swift */; };
 		6F0E1FD156E42311F4755529 /* StreamingTranscriptionSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FC526BEAE1253A84FAA61F4 /* StreamingTranscriptionSessionTests.swift */; };
@@ -196,6 +197,7 @@
 			files = (
 				CCA6160297EC5A1677B8106D /* WhisperKit in Frameworks */,
 				92E4016D915EA080EA0823A4 /* FluidAudio in Frameworks */,
+				68CD4D751C1034533737645F /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -474,6 +476,7 @@
 			packageProductDependencies = (
 				A2BDAA3B98771B1C1E1439F5 /* WhisperKit */,
 				428C87E32996A89D6D2D668E /* FluidAudio */,
+				DECF0E8FB2D2058742D4EF03 /* Sparkle */,
 			);
 			productName = Murmur;
 			productReference = C834EC374C4A986C47F46292 /* Murmur.app */;
@@ -488,12 +491,6 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
-					20EFC0E04F507A87E4831E0B = {
-						ProvisioningStyle = Automatic;
-					};
-					42F900FA13D760CB89CF4141 = {
-						ProvisioningStyle = Automatic;
-					};
 				};
 			};
 			buildConfigurationList = 7BC53DFDF5746356F727BB31 /* Build configuration list for PBXProject "Murmur" */;
@@ -507,6 +504,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				6E30B443696724587DF6189C /* XCRemoteSwiftPackageReference "FluidAudio" */,
+				35309D7AB0FF9DC97C88691A /* XCRemoteSwiftPackageReference "Sparkle" */,
 				397003762783C97EEB554A17 /* XCRemoteSwiftPackageReference "WhisperKit" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -718,10 +716,11 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_IDENTITY = "Developer ID Application";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -735,7 +734,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2.3;
+				MARKETING_VERSION = 0.2.4;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				MURMUR_UPDATE_CHECK_INTERVAL_HOURS = 12;
@@ -802,7 +801,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -822,7 +821,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2.3;
+				MARKETING_VERSION = 0.2.4;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				MURMUR_UPDATE_CHECK_INTERVAL_HOURS = 12;
@@ -870,6 +869,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		35309D7AB0FF9DC97C88691A /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.2;
+			};
+		};
 		397003762783C97EEB554A17 /* XCRemoteSwiftPackageReference "WhisperKit" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/argmaxinc/WhisperKit";
@@ -898,6 +905,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 397003762783C97EEB554A17 /* XCRemoteSwiftPackageReference "WhisperKit" */;
 			productName = WhisperKit;
+		};
+		DECF0E8FB2D2058742D4EF03 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 35309D7AB0FF9DC97C88691A /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

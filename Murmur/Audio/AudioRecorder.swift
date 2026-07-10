@@ -6,11 +6,14 @@ actor AudioRecorder {
     enum RecorderError: Error, LocalizedError {
         case engineFailed(String)
         case conversionFailed
+        case deviceSelectionFailed(OSStatus)
 
         var errorDescription: String? {
             switch self {
             case .engineFailed(let detail): return "Audio engine failed: \(detail)"
             case .conversionFailed: return "Audio conversion setup failed."
+            case .deviceSelectionFailed(let status):
+                return "Could not select the requested microphone (Core Audio error \(status))."
             }
         }
     }
@@ -118,9 +121,9 @@ actor AudioRecorder {
         engine.reset()
 
         if let forcedDeviceID {
-            applyInputDevice(forcedDeviceID)
+            try applyInputDevice(forcedDeviceID)
         } else if overrideDevice {
-            applyCurrentInputDevice()
+            try applyCurrentInputDevice()
         }
 
         do {
@@ -229,15 +232,15 @@ actor AudioRecorder {
         tapInstalled = false
     }
 
-    private func applyCurrentInputDevice() {
+    private func applyCurrentInputDevice() throws {
         guard let deviceID = AudioInputDeviceManager.systemDefaultInputDeviceID() else { return }
-        applyInputDevice(deviceID)
+        try applyInputDevice(deviceID)
     }
 
-    private func applyInputDevice(_ deviceID: AudioDeviceID) {
+    private func applyInputDevice(_ deviceID: AudioDeviceID) throws {
         guard let audioUnit = engine.inputNode.audioUnit else { return }
         var deviceID = deviceID
-        _ = AudioUnitSetProperty(
+        let status = AudioUnitSetProperty(
             audioUnit,
             kAudioOutputUnitProperty_CurrentDevice,
             kAudioUnitScope_Global,
@@ -245,6 +248,10 @@ actor AudioRecorder {
             &deviceID,
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
+        guard status == noErr else {
+            log.error("Failed to select input device \(deviceID): Core Audio status \(status)")
+            throw RecorderError.deviceSelectionFailed(status)
+        }
     }
 
     private static func builtInInputDeviceID() -> AudioDeviceID? {
@@ -326,7 +333,11 @@ actor AudioRecorder {
         }
 
         guard wasRecording else {
-            applyCurrentInputDevice()
+            do {
+                try applyCurrentInputDevice()
+            } catch {
+                log.error("Failed to follow changed default input: \(String(describing: error), privacy: .public)")
+            }
             return
         }
 

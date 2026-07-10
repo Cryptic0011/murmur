@@ -66,7 +66,7 @@ struct AboutTab: View {
                 }
             }
 
-            MurmurCard(title: "Updates", subtitle: "GitHub Releases checks for production builds and DMG distribution.") {
+            MurmurCard(title: "Updates", subtitle: "Sparkle securely downloads and installs new Murmur releases.") {
                 VStack(alignment: .leading, spacing: 12) {
                     runtimeRow(
                         title: "Current version",
@@ -84,17 +84,16 @@ struct AboutTab: View {
                         symbol: "clock.fill"
                     )
                     Toggle("Automatically check for updates on launch", isOn: Binding(
-                        get: { settings.automaticUpdateChecks },
-                        set: { settings.automaticUpdateChecks = $0 }
+                        get: { updates.automaticallyChecksForUpdates },
+                        set: { updates.automaticallyChecksForUpdates = $0 }
                     ))
                     .toggleStyle(.switch)
 
                     Button("Check for Updates Now") {
-                        Task { @MainActor in
-                            await updates.checkForUpdatesManually()
-                        }
+                        updates.checkForUpdatesManually()
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(!updates.canCheckForUpdates)
                 }
             }
         }

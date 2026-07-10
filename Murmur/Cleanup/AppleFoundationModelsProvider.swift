@@ -59,17 +59,12 @@ actor AppleFoundationModelsProvider: CleanupProvider {
     }
 
     static func isAvailable() -> Bool {
-        if #available(macOS 26.0, *) {
-            if case .available = SystemLanguageModel.default.availability { return true }
-        }
+        if case .available = SystemLanguageModel.default.availability { return true }
         return false
     }
 
     static func availabilityDescription() -> String {
-        if #available(macOS 26.0, *) {
-            return reason(for: SystemLanguageModel.default.availability)
-        }
-        return "Requires macOS 26 or newer."
+        reason(for: SystemLanguageModel.default.availability)
     }
 
     private static func reason(for availability: SystemLanguageModel.Availability) -> String {

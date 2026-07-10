@@ -219,6 +219,16 @@ struct GeneralTab: View {
             refreshAudioDevices()
             settings.launchAtLogin = LaunchAtLoginController.isEnabled
         }
+        .task {
+            // Core Audio device/default changes do not publish through SwiftUI.
+            // Keep the visible picker in sync when Bluetooth microphones connect,
+            // disconnect, or become the system default.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { break }
+                refreshAudioDevices()
+            }
+        }
         .onDisappear {
             stopCapture()
             micTest.stop()
@@ -237,7 +247,10 @@ struct GeneralTab: View {
     }
 
     private func refreshAudioDevices() {
-        audioDevices = AudioInputDeviceManager.devices()
+        let devices = AudioInputDeviceManager.devices()
+        if devices != audioDevices {
+            audioDevices = devices
+        }
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {

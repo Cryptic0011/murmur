@@ -6,6 +6,9 @@ packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
     from: "0.12.4"
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.9.2"
 options:
   bundleIdPrefix: com.murmur
   deploymentTarget:
@@ -14,14 +17,20 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.10"
-    MARKETING_VERSION: "0.2.3"
-    CURRENT_PROJECT_VERSION: "5"
+    MARKETING_VERSION: "0.2.4"
+    CURRENT_PROJECT_VERSION: "6"
     MURMUR_UPDATE_REPOSITORY: Cryptic0011/murmur
     MURMUR_UPDATE_RELEASES_PAGE_URL: https://github.com/Cryptic0011/murmur/releases
     MURMUR_UPDATE_CHECK_INTERVAL_HOURS: "12"
     ENABLE_HARDENED_RUNTIME: YES
     CODE_SIGN_STYLE: Automatic
-    CODE_SIGN_IDENTITY: "-"
+  configs:
+    Debug:
+      CODE_SIGN_IDENTITY: "-"
+    Release:
+      CODE_SIGN_STYLE: Manual
+      CODE_SIGN_IDENTITY: "Developer ID Application"
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
 targets:
   Murmur:
     type: application
@@ -33,6 +42,7 @@ targets:
     dependencies:
       - package: WhisperKit
       - package: FluidAudio
+      - package: Sparkle
     info:
       path: Murmur/Info.plist
       properties:
@@ -43,6 +53,10 @@ targets:
         MurmurUpdateRepository: "$(MURMUR_UPDATE_REPOSITORY)"
         MurmurUpdateReleasesPageURL: "$(MURMUR_UPDATE_RELEASES_PAGE_URL)"
         MurmurUpdateCheckIntervalHours: "$(MURMUR_UPDATE_CHECK_INTERVAL_HOURS)"
+        SUFeedURL: "https://github.com/Cryptic0011/murmur/releases/latest/download/appcast.xml"
+        SUPublicEDKey: "GPa3gezkwPZ2JAkqkXxa3DDSirwWVGd7kr1/H1Uu0sY="
+        SUEnableAutomaticChecks: true
+        SUAllowsAutomaticUpdates: true
         CFBundleURLTypes:
           - CFBundleURLName: com.murmur.Murmur
             CFBundleURLSchemes: [murmur]
