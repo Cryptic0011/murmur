@@ -41,7 +41,7 @@ CoreML). Personal build (dev account, iPhone 17 Pro Max); no App Store scope.
 3. **Keyboard extension** — mic key, globe, delete, return, space.
    - No mic/model in-extension (iOS forbids mic; memory cap forbids model).
    - Flow: mic key → deep link → app records → transcript written to App
-     Group `UserDefaults` (`group.com.grayson.murmur`) with a timestamp →
+     Group `UserDefaults` (`group.com.murmur.Murmur`) with a timestamp →
      app returns user to previous app → keyboard reads + inserts + clears.
    - Recording backend behind one function so a session-based backend can
      swap in later.
