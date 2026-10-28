@@ -72,4 +72,43 @@ final class TextReplacerTests: XCTestCase {
             "Check Supabase, then deploy."
         )
     }
+
+    func testApplyingTwiceIsSafeWhenReplacementContainsFind() {
+        let rules = [ReplacementRule(find: "react", replace: "React.js")]
+        let once = TextReplacer.apply(rules, to: "use react today")
+        XCTAssertEqual(once, "use React.js today")
+        XCTAssertEqual(TextReplacer.apply(rules, to: once), once)
+        // An existing any-case occurrence is normalized, not nested.
+        XCTAssertEqual(TextReplacer.apply(rules, to: "use react.js today"), "use React.js today")
+
+        let app = [ReplacementRule(find: "app", replace: "Murmur app")]
+        XCTAssertEqual(TextReplacer.apply(app, to: TextReplacer.apply(app, to: "open the app")), "open the Murmur app")
+    }
+
+    func testLowercaseReplacementFollowsSpokenCapitalization() {
+        let rules = [ReplacementRule(find: "gonna", replace: "going to")]
+        XCTAssertEqual(
+            TextReplacer.apply(rules, to: "Gonna ship it, gonna test it"),
+            "Going to ship it, going to test it"
+        )
+        // Sentence punctuation inside an expansion doesn't make it a literal snippet.
+        let brb = [ReplacementRule(find: "brb", replace: "be right back.")]
+        XCTAssertEqual(TextReplacer.apply(brb, to: "Hold on. BRB"), "Hold on. Be right back.")
+        // Speech-to-text capitalizes acronyms anywhere; mid-sentence that isn't a capital.
+        XCTAssertEqual(TextReplacer.apply(brb, to: "ok BRB"), "ok be right back.")
+        XCTAssertEqual(
+            TextReplacer.apply([ReplacementRule(find: "asap", replace: "as soon as possible")], to: "send it ASAP"),
+            "send it as soon as possible"
+        )
+    }
+
+    func testDeliberateCasingIsKeptVerbatim() {
+        let rules = [ReplacementRule(find: "ios", replace: "iOS")]
+        XCTAssertEqual(TextReplacer.apply(rules, to: "Ios and ios"), "iOS and iOS")
+    }
+
+    func testLiteralSnippetIsKeptVerbatimAtSentenceStart() {
+        let rules = [ReplacementRule(find: "my email", replace: "jane.doe@example.com")]
+        XCTAssertEqual(TextReplacer.apply(rules, to: "My email is below"), "jane.doe@example.com is below")
+    }
 }

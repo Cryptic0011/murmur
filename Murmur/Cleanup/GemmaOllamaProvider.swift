@@ -3,28 +3,46 @@ import Foundation
 actor GemmaOllamaProvider: CleanupProvider {
     nonisolated let displayName = "Ollama (local)"
 
-    enum OllamaError: Error { case unreachable, badStatus(Int), decodeFailed }
+    enum OllamaError: Error { case unreachable, badStatus(Int), decodeFailed, truncated }
 
     private let endpoint: URL
     private let model: String
     private let urlSession: URLSession
+    private nonisolated let baseTimeout: TimeInterval
+    /// Skips the per-dictation probe while a recent request proved the server is up.
+    private var reachableUntil: Date?
 
+    /// - Parameter timeout: base seconds for one cleanup; longer dictations get more (see `timeBudget`).
     init(endpoint: URL = URL(string: "http://localhost:11434")!, model: String, timeout: TimeInterval = 8.0) {
         self.endpoint = endpoint
         self.model = model
+        self.baseTimeout = timeout
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = timeout
-        cfg.timeoutIntervalForResource = timeout
+        cfg.timeoutIntervalForResource = 60 // hard cap; each request sets its own budget
         self.urlSession = URLSession(configuration: cfg)
     }
 
+    nonisolated func timeBudget(wordCount: Int) -> TimeInterval {
+        // ponytail: ~20 words/s on modest Macs with the model resident; a cold multi-GB load
+        // after keep_alive expires can still overrun and fall back once.
+        min(baseTimeout + Double(wordCount) * 0.05, 30)
+    }
+
     func clean(text: String, mode: CleanupMode, context: CleanupContext) async throws -> String {
-        if !(await Self.isReachable(endpoint: endpoint)) {
-            _ = await Self.ensureRunning(endpoint: endpoint)
+        // Never launch or wait for a server here: DependencySetupCoordinator owns starting Ollama,
+        // and a dictation that polls for one that may never appear stalls the paste.
+        if (reachableUntil ?? .distantPast) < Date() {
+            guard await Self.isReachable(endpoint: endpoint) else { throw OllamaError.unreachable }
+            reachableUntil = Date().addingTimeInterval(60)
         }
 
+        // Counts each Han/kana character, like the orchestrator, so CJK budgets aren't one "word".
+        let wordCount = DictationOrchestrator.wordCount(text)
+        let budget = timeBudget(wordCount: wordCount)
         var req = URLRequest(url: endpoint.appendingPathComponent("api/chat"))
         req.httpMethod = "POST"
+        req.timeoutInterval = budget
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         struct Body: Encodable {
@@ -41,13 +59,12 @@ actor GemmaOllamaProvider: CleanupProvider {
                 case keepAlive = "keep_alive"
             }
         }
-        let wordCount = text.split(whereSeparator: \.isWhitespace).count
         let body = Body(
             model: model,
             stream: false,
             messages: [
                 .init(role: "system", content: PromptBuilder.systemPrompt(for: mode, context: context)),
-                .init(role: "user", content: PromptBuilder.transcriptMessage(text)),
+                .init(role: "user", content: PromptBuilder.transcriptMessage(text, fieldText: context.fieldText)),
                 .init(role: "assistant", content: PromptBuilder.assistantPrefill),
             ],
             keepAlive: "30m",
@@ -60,19 +77,36 @@ actor GemmaOllamaProvider: CleanupProvider {
         )
         req.httpBody = try JSONEncoder().encode(body)
 
-        let (data, response): (Data, URLResponse)
+        let (data, status): (Data, Int)
         do {
-            (data, response) = try await urlSession.data(for: req)
+            let session = urlSession
+            let request = req
+            (data, status) = try await withCleanupTimeout(seconds: budget) {
+                let (data, response) = try await session.data(for: request)
+                return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
+            }
         } catch {
+            reachableUntil = nil
             throw OllamaError.unreachable
         }
-        guard let http = response as? HTTPURLResponse else { throw OllamaError.badStatus(0) }
-        guard (200..<300).contains(http.statusCode) else { throw OllamaError.badStatus(http.statusCode) }
+        guard (200..<300).contains(status) else { throw OllamaError.badStatus(status) }
 
-        struct Wire: Decodable { let message: Msg; struct Msg: Decodable { let content: String } }
-        let wire = try JSONDecoder().decode(Wire.self, from: data)
-        let unwrapped = CleanupOutputGuard.unwrapTags(wire.message.content)
-        guard let sanitized = CleanupOutputGuard.sanitize(candidate: unwrapped, original: text, mode: mode) else {
+        struct Wire: Decodable {
+            struct Msg: Decodable { let content: String? }
+            let message: Msg?
+            let doneReason: String?
+            enum CodingKeys: String, CodingKey {
+                case message
+                case doneReason = "done_reason"
+            }
+        }
+        guard let wire = try? JSONDecoder().decode(Wire.self, from: data) else { throw OllamaError.decodeFailed }
+        // num_predict reached: the cleanup stops mid-dictation.
+        if wire.doneReason == "length" { throw OllamaError.truncated }
+        let unwrapped = CleanupOutputGuard.unwrapTags(wire.message?.content ?? "")
+        guard let sanitized = CleanupOutputGuard.sanitize(
+            candidate: unwrapped, original: text, mode: mode, vocabulary: context.vocabulary
+        ) else {
             throw OllamaError.decodeFailed
         }
         return sanitized
@@ -175,7 +209,8 @@ actor GemmaOllamaProvider: CleanupProvider {
         waitTimeout: TimeInterval = 20
     ) async -> Bool {
         if await isReachable(endpoint: endpoint) { return true }
-        launchServerIfInstalled()
+        // Nothing was launched, so there is no server worth polling for.
+        guard launchServerIfInstalled() else { return false }
 
         let deadline = Date().addingTimeInterval(waitTimeout)
         while Date() < deadline {
@@ -189,14 +224,15 @@ actor GemmaOllamaProvider: CleanupProvider {
         return await isReachable(endpoint: endpoint)
     }
 
-    private static func launchServerIfInstalled() {
-        guard let executable = ollamaExecutablePath() else { return }
+    /// Starts `ollama serve` in the background; false when Ollama isn't installed or the launch failed.
+    private static func launchServerIfInstalled() -> Bool {
+        guard let executable = ollamaExecutablePath() else { return false }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
             "-lc",
-            "nohup '\(executable.replacingOccurrences(of: "'", with: "'\\''"))' serve >/tmp/murmur-ollama.log 2>&1 &"
+            "nohup \(shellQuoted(executable)) serve >\(shellQuoted(serverLogPath())) 2>&1 &"
         ]
 
         // FileHandle would leak an fd per launch attempt; NullDevice doesn't.
@@ -205,9 +241,24 @@ actor GemmaOllamaProvider: CleanupProvider {
 
         do {
             try process.run()
+            return true
         } catch {
-            return
+            return false
         }
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// The per-user log folder rather than a predictable path in world-writable /tmp.
+    private static func serverLogPath() -> String {
+        let logs = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/Murmur", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)) != nil else {
+            return "/dev/null"
+        }
+        return logs.appendingPathComponent("ollama.log").path
     }
 
     static func ollamaExecutablePath() -> String? {
@@ -221,10 +272,10 @@ actor GemmaOllamaProvider: CleanupProvider {
     }
 
     func warmUp() async {
-        let reachable = await Self.isReachable(endpoint: endpoint)
-        if !reachable {
-            guard await Self.ensureRunning(endpoint: endpoint) else { return }
-        }
+        // Never launch from here: DependencySetupCoordinator owns starting the server, and
+        // it warms the model once its setup run finds it ready.
+        guard await Self.isReachable(endpoint: endpoint) else { return }
+        reachableUntil = Date().addingTimeInterval(60)
         // /api/tags does not load the model into memory — send a tiny chat request
         // with keep_alive so the first real cleanup skips the multi-second load.
         struct WarmBody: Encodable {

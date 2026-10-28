@@ -10,6 +10,9 @@ struct DependencySetupCard: View {
                 if setup.snapshot.usesWhisperLocal {
                     setupRow(title: "Whisper", value: setup.snapshot.whisper.detail, state: setup.snapshot.whisper)
                 }
+                if setup.snapshot.usesParakeetLocal {
+                    setupRow(title: "Parakeet", value: setup.snapshot.parakeet.detail, state: setup.snapshot.parakeet)
+                }
                 if setup.snapshot.usesGroqAPI {
                     setupRow(title: "Groq API", value: setup.snapshot.groq.detail, state: setup.snapshot.groq)
                 }
@@ -79,7 +82,7 @@ struct DependencySetupCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.black.opacity(0.05))
+                .fill(Color.murmurRowFill)
         )
     }
 }

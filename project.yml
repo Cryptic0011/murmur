@@ -1,11 +1,13 @@
 name: Murmur
 packages:
+  # 0.x packages may break APIs in minor releases, so allow patch updates only.
+  # Exact versions are locked in the committed Package.resolved.
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
-    from: "0.18.0"
+    minorVersion: "0.18.0"
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
-    from: "0.12.4"
+    minorVersion: "0.15.4"
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     from: "2.9.2"
@@ -19,9 +21,6 @@ settings:
     SWIFT_VERSION: "5.10"
     MARKETING_VERSION: "0.2.4"
     CURRENT_PROJECT_VERSION: "6"
-    MURMUR_UPDATE_REPOSITORY: Cryptic0011/murmur
-    MURMUR_UPDATE_RELEASES_PAGE_URL: https://github.com/Cryptic0011/murmur/releases
-    MURMUR_UPDATE_CHECK_INTERVAL_HOURS: "12"
     ENABLE_HARDENED_RUNTIME: YES
     CODE_SIGN_STYLE: Automatic
   configs:
@@ -47,16 +46,15 @@ targets:
       path: Murmur/Info.plist
       properties:
         LSUIElement: true
-        NSMicrophoneUsageDescription: "Murmur listens to your voice while you hold the dictation hotkey, transcribes it locally, and pastes the cleaned text where you're typing."
+        NSMicrophoneUsageDescription: "Murmur records your voice while you dictate, transcribes it with the speech engine you choose (on-device by default; a cloud provider such as Groq receives the audio only if you select it), and pastes the text where you're typing."
+        NSDocumentsFolderUsageDescription: "Murmur looks for speech models that earlier versions downloaded to your Documents folder and copies them to Murmur's Application Support folder."
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        MurmurUpdateRepository: "$(MURMUR_UPDATE_REPOSITORY)"
-        MurmurUpdateReleasesPageURL: "$(MURMUR_UPDATE_RELEASES_PAGE_URL)"
-        MurmurUpdateCheckIntervalHours: "$(MURMUR_UPDATE_CHECK_INTERVAL_HOURS)"
         SUFeedURL: "https://github.com/Cryptic0011/murmur/releases/latest/download/appcast.xml"
         SUPublicEDKey: "GPa3gezkwPZ2JAkqkXxa3DDSirwWVGd7kr1/H1Uu0sY="
         SUEnableAutomaticChecks: true
         SUAllowsAutomaticUpdates: true
+        SUScheduledCheckInterval: 43200 # 12 hours
         CFBundleURLTypes:
           - CFBundleURLName: com.murmur.Murmur
             CFBundleURLSchemes: [murmur]

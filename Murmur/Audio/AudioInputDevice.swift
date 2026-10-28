@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import IOKit
 
 struct AudioInputDevice: Identifiable, Equatable, Sendable {
     var id: String { uid }
@@ -39,8 +40,74 @@ enum AudioInputDeviceManager {
         }
     }
 
+    /// Input device with this UID, if connected. One HAL lookup instead of
+    /// enumerating every device — this runs on the recording start path.
     static func deviceID(forUID uid: String) -> AudioDeviceID? {
-        devices().first { $0.uid == uid }?.deviceID
+        guard let id = audioDeviceID(forUID: uid), hasInputStreams(id) else { return nil }
+        return id
+    }
+
+    /// Any audio device (input or output) with this UID, if connected.
+    static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+        var cfUID = uid as CFString
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = withUnsafePointer(to: &cfUID) { qualifier in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &address,
+                UInt32(MemoryLayout<CFString>.size), qualifier, &size, &deviceID
+            )
+        }
+        // An unknown UID isn't an error: the HAL answers kAudioObjectUnknown.
+        guard status == noErr, deviceID != kAudioObjectUnknown else { return nil }
+        return deviceID
+    }
+
+    static func uid(of deviceID: AudioDeviceID) -> String? {
+        stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
+    }
+
+    /// First built-in input (the MacBook/iMac mic). Enumerates devices, so it's
+    /// only consulted for fallbacks, not on the normal start path. Nil while a
+    /// MacBook's lid is closed: the mic is cut off in hardware but stays listed, and
+    /// the engine starts on it fine, so it would quietly record silence.
+    static func builtInInputDeviceID() -> AudioDeviceID? {
+        guard !isLidClosed() else { return nil }
+        return allDeviceIDs()?.first { id in
+            hasInputStreams(id) && transportType(of: id) == kAudioDeviceTransportTypeBuiltIn
+        }
+    }
+
+    /// True in clamshell mode. Macs without a lid don't publish the property.
+    static func isLidClosed() -> Bool {
+        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard root != 0 else { return false }
+        defer { IOObjectRelease(root) }
+        let value = IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue()
+        return (value as? Bool) ?? false
+    }
+
+    static func isBluetooth(_ deviceID: AudioDeviceID) -> Bool {
+        let transport = transportType(of: deviceID)
+        return transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    /// False once the device is unusable or gone (unplugged, AirPods back in the case).
+    static func isAlive(_ deviceID: AudioDeviceID) -> Bool {
+        var alive: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        return AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &alive) == noErr && alive != 0
     }
 
     static func deviceName(forUID uid: String) -> String? {
@@ -107,7 +174,7 @@ enum AudioInputDeviceManager {
         return value as String?
     }
 
-    private static func transportName(for deviceID: AudioDeviceID) -> String {
+    private static func transportType(of deviceID: AudioDeviceID) -> UInt32? {
         var transport: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
         var address = AudioObjectPropertyAddress(
@@ -116,8 +183,13 @@ enum AudioInputDeviceManager {
             mElement: kAudioObjectPropertyElementMain
         )
         guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transport) == noErr else {
-            return "Audio"
+            return nil
         }
+        return transport
+    }
+
+    private static func transportName(for deviceID: AudioDeviceID) -> String {
+        guard let transport = transportType(of: deviceID) else { return "Audio" }
 
         switch transport {
         case kAudioDeviceTransportTypeBuiltIn: return "Built-in"

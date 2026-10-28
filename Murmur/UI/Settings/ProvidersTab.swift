@@ -1,5 +1,7 @@
 import AppKit
+import Combine
 import SwiftUI
+import WhisperKit
 
 struct ProvidersTab: View {
     @ObservedObject var settings: SettingsStore
@@ -30,6 +32,26 @@ struct ProvidersTab: View {
         }
     }
 
+    /// English-only models first (smaller, sharper on English); multilingual ones
+    /// are the only way to dictate other languages or translate them to English.
+    static let whisperModels: [(id: String, label: String)] = [
+        ("openai_whisper-tiny.en", "tiny.en — English"),
+        ("openai_whisper-base.en", "base.en — English"),
+        ("openai_whisper-small.en", "small.en — English (recommended)"),
+        ("openai_whisper-medium.en", "medium.en — English"),
+        ("openai_whisper-small", "small — Multilingual"),
+        largeMultilingualModel,
+    ]
+
+    /// WhisperKit's bundled support table leaves large-v3 turbo out on M1, which gets
+    /// the non-turbo large-v3 instead; Macs newer than the table support every model.
+    static let largeMultilingualModel: (id: String, label: String) = {
+        let turbo = "openai_whisper-large-v3-v20240930_turbo_632MB"
+        return WhisperKit.recommendedModels().supported.contains(turbo)
+            ? (turbo, "large-v3 turbo — Multilingual, most accurate (632 MB)")
+            : ("openai_whisper-large-v3-v20240930_626MB", "large-v3 — Multilingual, most accurate (626 MB)")
+    }()
+
     private var appleIntelligenceHint: String {
         if #available(macOS 26.0, *) {
             return AppleFoundationModelsProvider.availabilityDescription()
@@ -51,7 +73,7 @@ struct ProvidersTab: View {
                         set: { settings.transcriptionProvider = $0 }
                     )) {
                         ForEach(TranscriptionProviderOption.availableCases) { option in
-                            Text(option == .whisperLocal
+                            Text(option == TranscriptionProviderOption.freshInstallDefault().provider
                                  ? "\(option.displayName) · \(option.familyLabel) — Recommended"
                                  : "\(option.displayName) · \(option.familyLabel)")
                                 .tag(option)
@@ -60,22 +82,6 @@ struct ProvidersTab: View {
                     .labelsHidden()
                     .accessibilityLabel("Transcription provider")
                     .pickerStyle(.menu)
-
-                    if settings.transcriptionProvider == .whisperLocal {
-                        Toggle("Translate speech to English", isOn: Binding(
-                            get: { settings.translateToEnglish },
-                            set: { settings.translateToEnglish = $0 }
-                        ))
-                        .toggleStyle(.switch)
-                        if settings.translateToEnglish {
-                            Text(settings.whisperModel.hasSuffix(".en")
-                                 ? "Translation needs a multilingual Whisper model — the current English-only (.en) model will ignore this setting."
-                                 : "Speak any language; the transcript comes out in English.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
 
                     if settings.transcriptionProvider == .appleSpeech {
                         Text("Apple Speech uses the on-device SpeechAnalyzer model (macOS 26+). The first run downloads the speech asset; subsequent runs are instant.")
@@ -117,21 +123,39 @@ struct ProvidersTab: View {
                                 set: { settings.whisperModel = $0 }
                             )
                         ) {
-                            Text("tiny.en").tag("openai_whisper-tiny.en")
-                            Text("base.en").tag("openai_whisper-base.en")
-                            Text("small.en (recommended)").tag("openai_whisper-small.en")
-                            Text("medium.en").tag("openai_whisper-medium.en")
+                            ForEach(Self.whisperModels, id: \.id) { model in
+                                Text(model.label).tag(model.id)
+                            }
+                            // A model stored by an older build (or set by hand) still shows.
+                            if !Self.whisperModels.contains(where: { $0.id == settings.whisperModel }) {
+                                Text("Other: \(settings.whisperModel)").tag(settings.whisperModel)
+                            }
                         }
                         .labelsHidden()
                         .accessibilityLabel("Whisper model")
                         .pickerStyle(.menu)
+
+                        let multilingual = !settings.whisperModel.hasSuffix(".en")
+                        Toggle("Translate speech to English", isOn: Binding(
+                            get: { multilingual && settings.translateToEnglish },
+                            set: { settings.translateToEnglish = $0 }
+                        ))
+                        .toggleStyle(.switch)
+                        .disabled(!multilingual)
+                        if !multilingual || settings.translateToEnglish {
+                            Text(multilingual
+                                 ? "Speak any language; the transcript comes out in English."
+                                 : "English-only (.en) models can't translate. Pick a multilingual model to dictate in other languages or translate them to English.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     } else if settings.transcriptionProvider == .groqAPI {
                         Text("Groq transcription model")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
-                        TextField("Model", text: Binding(
-                            get: { settings.groqTranscriptionModel },
-                            set: { settings.groqTranscriptionModel = $0 }
-                        ))
+                        CommitTextField(title: "Model", value: settings.groqTranscriptionModel) {
+                            settings.groqTranscriptionModel = $0
+                        }
                         .textFieldStyle(.roundedBorder)
                     }
                 }
@@ -164,7 +188,8 @@ struct ProvidersTab: View {
                     )) {
                         Text("None").tag(CleanupProviderOption?.none)
                         ForEach(CleanupProviderOption.availableCases.filter { $0 != settings.primaryCleanupProvider }) { option in
-                            Text(option == CleanupProviderOption.defaultFallback
+                            // Built-in rules are the fallback only because nothing better is usable.
+                            Text(option == CleanupProviderOption.defaultFallback && option != .builtIn
                                  ? "\(option.displayName) · \(option.familyLabel) — Recommended fallback"
                                  : "\(option.displayName) · \(option.familyLabel)")
                                 .tag(CleanupProviderOption?.some(option))
@@ -182,19 +207,26 @@ struct ProvidersTab: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
+                    Stepper("AI cleanup minimum: \(settings.llmCleanupWordThreshold) words", value: Binding(
+                        get: { settings.llmCleanupWordThreshold },
+                        set: { settings.llmCleanupWordThreshold = $0 }
+                    ), in: 0...200)
+                    Text("Shorter dictations use built-in rules. Set to 0 to always use the selected cleanup provider.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+
                     Text("Custom instructions")
                         .font(.system(size: 13, weight: .bold, design: .rounded))
-                    TextEditor(text: Binding(
-                        get: { settings.cleanupInstructions },
-                        set: { settings.cleanupInstructions = $0 }
-                    ))
+                    CommitTextField(title: "Custom instructions", value: settings.cleanupInstructions, multiline: true) {
+                        settings.cleanupInstructions = $0
+                    }
                     .font(.system(size: 12))
                     .frame(height: 60)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
                     )
-                    Text("Optional style preferences applied to every cleanup — e.g. “Use British spelling” or “Never use em dashes”.")
+                    Text("Optional style preferences applied to every cleanup — e.g. “Use British spelling” or “Never use em dashes”. Saved as you type.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -211,13 +243,19 @@ struct ProvidersTab: View {
                     makeProvider: { key in
                         OpenAICompatibleProvider.custom(
                             apiKey: key, baseURL: settings.customBaseURL, model: settings.customModel
-                        )
+                        ) { [settings] old, new in
+                            await MainActor.run {
+                                if settings.customModel == old { settings.customModel = new }
+                            }
+                        }
                     }
                 ) {
-                    TextField("Base URL (e.g. http://localhost:1234/v1)", text: Binding(
-                        get: { settings.customBaseURL },
-                        set: { settings.customBaseURL = $0 }
-                    ))
+                    // Commit on Return/focus loss only: each write rebuilds providers
+                    // and warms the endpoint with the saved key, so half-typed hosts
+                    // must never reach the store.
+                    CommitTextField(title: "Base URL (e.g. http://localhost:1234/v1)", value: settings.customBaseURL) {
+                        settings.customBaseURL = $0
+                    }
                     .textFieldStyle(.roundedBorder)
 
                     if let warning = OpenAICompatibleProvider.customEndpointWarning(
@@ -229,10 +267,9 @@ struct ProvidersTab: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    TextField("Model name", text: Binding(
-                        get: { settings.customModel },
-                        set: { settings.customModel = $0 }
-                    ))
+                    CommitTextField(title: "Model name", value: settings.customModel) {
+                        settings.customModel = $0
+                    }
                     .textFieldStyle(.roundedBorder)
                 }
             }
@@ -245,22 +282,24 @@ struct ProvidersTab: View {
                     keychain: .groqAPIKey,
                     settings: settings,
                     makeProvider: { key in
-                        OpenAICompatibleProvider.groq(apiKey: key, model: settings.groqModel)
+                        OpenAICompatibleProvider.groq(apiKey: key, model: settings.groqModel) { [settings] old, new in
+                            await MainActor.run {
+                                if settings.groqModel == old { settings.groqModel = new }
+                            }
+                        }
                     }
                 ) {
                     if settings.transcriptionProvider == .groqAPI {
-                        TextField("Transcription model", text: Binding(
-                            get: { settings.groqTranscriptionModel },
-                            set: { settings.groqTranscriptionModel = $0 }
-                        ))
+                        CommitTextField(title: "Transcription model", value: settings.groqTranscriptionModel) {
+                            settings.groqTranscriptionModel = $0
+                        }
                         .textFieldStyle(.roundedBorder)
                     }
 
                     if settings.primaryCleanupProvider == .groqAPI || settings.secondaryCleanupProvider == .groqAPI {
-                        TextField("Cleanup model", text: Binding(
-                            get: { settings.groqModel },
-                            set: { settings.groqModel = $0 }
-                        ))
+                        CommitTextField(title: "Cleanup model", value: settings.groqModel) {
+                            settings.groqModel = $0
+                        }
                         .textFieldStyle(.roundedBorder)
                     }
                 }
@@ -274,13 +313,16 @@ struct ProvidersTab: View {
                     keychain: .cerebrasAPIKey,
                     settings: settings,
                     makeProvider: { key in
-                        OpenAICompatibleProvider.cerebras(apiKey: key, model: settings.cerebrasModel)
+                        OpenAICompatibleProvider.cerebras(apiKey: key, model: settings.cerebrasModel) { [settings] old, new in
+                            await MainActor.run {
+                                if settings.cerebrasModel == old { settings.cerebrasModel = new }
+                            }
+                        }
                     }
                 ) {
-                    TextField("Cleanup model", text: Binding(
-                        get: { settings.cerebrasModel },
-                        set: { settings.cerebrasModel = $0 }
-                    ))
+                    CommitTextField(title: "Cleanup model", value: settings.cerebrasModel) {
+                        settings.cerebrasModel = $0
+                    }
                     .textFieldStyle(.roundedBorder)
                 }
             }
@@ -289,10 +331,11 @@ struct ProvidersTab: View {
                 MurmurCard(title: "Local Cleanup", subtitle: "Any Ollama chat model handles offline cleanup when selected.") {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(spacing: 8) {
-                            TextField("Ollama model", text: Binding(
-                                get: { settings.ollamaModel },
-                                set: { settings.ollamaModel = $0 }
-                            ))
+                            // Setup pulls whatever name is stored, so a prefix like
+                            // "gemma3" must never be committed while typing "gemma3:12b".
+                            CommitTextField(title: "Ollama model", value: settings.ollamaModel) {
+                                settings.ollamaModel = $0
+                            }
                             .textFieldStyle(.roundedBorder)
 
                             if !installedOllamaModels.isEmpty {
@@ -373,12 +416,13 @@ private struct APIKeyProviderCard<ModelFields: View>: View {
     let keyLabel: String
     let keychain: KeychainStore
     let settings: SettingsStore
-    let makeProvider: (String) -> CleanupProvider
+    let makeProvider: (String) -> OpenAICompatibleProvider
     @ViewBuilder let modelFields: ModelFields
 
     @State private var key: String = ""
     @State private var status: String?
     @State private var isTesting = false
+    @State private var models: [String] = []
 
     init(
         title: String,
@@ -386,7 +430,7 @@ private struct APIKeyProviderCard<ModelFields: View>: View {
         keyLabel: String,
         keychain: KeychainStore,
         settings: SettingsStore,
-        makeProvider: @escaping (String) -> CleanupProvider,
+        makeProvider: @escaping (String) -> OpenAICompatibleProvider,
         @ViewBuilder modelFields: () -> ModelFields
     ) {
         self.title = title
@@ -403,9 +447,25 @@ private struct APIKeyProviderCard<ModelFields: View>: View {
             VStack(alignment: .leading, spacing: 14) {
                 SecureField(keyLabel, text: $key)
                     .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel(keyLabel)
                     .onAppear { key = (try? keychain.get()) ?? "" }
 
                 modelFields
+
+                if !models.isEmpty {
+                    if title == "Groq API", settings.transcriptionProvider == .groqAPI {
+                        modelMenu("Choose transcription model", ids: models.filter(ModelCatalog.isTranscription)) {
+                            settings.groqTranscriptionModel = $0
+                        }
+                    }
+                    modelMenu("Choose cleanup model", ids: models.filter(ModelCatalog.isCleanup)) { model in
+                        switch title {
+                        case "Groq API": settings.groqModel = model
+                        case "Cerebras API": settings.cerebrasModel = model
+                        default: settings.customModel = model
+                        }
+                    }
+                }
 
                 HStack(spacing: 10) {
                     Button("Save Key") { saveKey() }
@@ -416,6 +476,8 @@ private struct APIKeyProviderCard<ModelFields: View>: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(isTesting)
+                    Button("Refresh Models") { Task { await refreshModels() } }
+                        .disabled(isTesting)
                 }
 
                 if let status {
@@ -427,14 +489,45 @@ private struct APIKeyProviderCard<ModelFields: View>: View {
         }
     }
 
-    private func saveKey() {
+    private func modelMenu(_ title: String, ids: [String], select: @escaping (String) -> Void) -> some View {
+        Menu(title) {
+            ForEach(ids, id: \.self) { model in Button(model) { select(model) } }
+        }
+        .disabled(ids.isEmpty)
+    }
+
+    @MainActor
+    private func refreshModels() async {
+        isTesting = true
+        defer { isTesting = false }
+        CommitTextField.commitPendingEdits()
         do {
-            try keychain.set(key)
-            status = "Key saved."
+            models = try await makeProvider(key).listModels()
+            status = "Available models refreshed."
+        } catch {
+            models = []
+            status = "Couldn't list models: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveKey() {
+        // Console copies often carry a trailing newline/space the SecureField
+        // hides, which turns every request into a 401.
+        key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        CommitTextField.commitPendingEdits()
+        do {
+            if key.isEmpty {
+                try keychain.delete()
+                status = "Key removed."
+            } else {
+                try keychain.set(key)
+                status = "Key saved."
+            }
         } catch {
             status = "Couldn't save key to Keychain: \(error.localizedDescription)"
         }
-        NotificationCenter.default.post(name: .settingsStoreDidChange, object: settings)
+        // Keys are cached: drop them, which also rebuilds the providers that send this one.
+        AppServices.apiKeys.reload()
     }
 
     @MainActor
@@ -446,10 +539,114 @@ private struct APIKeyProviderCard<ModelFields: View>: View {
         saveKey()
         let savedKey = (try? keychain.get()) ?? key
         do {
-            _ = try await makeProvider(savedKey).clean(text: "test connection", mode: .light)
+            let provider = makeProvider(savedKey)
+            models = try await provider.listModels()
+            if title == "Groq API", settings.primaryCleanupProvider != .groqAPI,
+               settings.secondaryCleanupProvider != .groqAPI {
+                guard models.contains(settings.groqTranscriptionModel) else {
+                    status = "The transcription model is unavailable. Choose a model from the refreshed list."
+                    return
+                }
+            } else {
+                _ = try await provider.clean(text: "test connection", mode: .light)
+            }
             status = "\(title) responded successfully. Key saved."
         } catch {
             status = "\(title) test failed: \(error.localizedDescription)"
         }
+    }
+}
+
+/// A settings text field that writes back only on Return, focus loss, tab switch
+/// or window close — never per keystroke (the multiline variant also saves once
+/// typing pauses). Every store write rebuilds the provider pipeline (reloading
+/// models, re-running setup, warming endpoints with the saved key), so partial
+/// hosts and model-name prefixes must never reach it.
+struct CommitTextField: View {
+    let title: String
+    let value: String
+    var multiline = false
+    let commit: (String) -> Void
+
+    @State private var draft: String
+    @FocusState private var focused: Bool
+
+    init(title: String, value: String, multiline: Bool = false, commit: @escaping (String) -> Void) {
+        self.title = title
+        self.value = value
+        self.multiline = multiline
+        self.commit = commit
+        _draft = State(initialValue: value)
+    }
+
+    private static let commitNotification = Notification.Name("MurmurCommitPendingSettingsEdits")
+
+    /// Flushes every visible draft synchronously, e.g. before Save/Test reads the store.
+    static func commitPendingEdits() {
+        NotificationCenter.default.post(name: commitNotification, object: nil)
+    }
+
+    var body: some View {
+        Group {
+            if multiline {
+                TextEditor(text: $draft)
+                    .accessibilityLabel(title)
+            } else {
+                TextField(title, text: $draft)
+                    .onSubmit(save)
+                    .overlay(alignment: .trailing) {
+                        if focused, isDirty {
+                            Image(systemName: "return")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.tertiary)
+                                .padding(.trailing, 6)
+                                .help("Press Return to apply")
+                                .accessibilityHidden(true)
+                        }
+                    }
+            }
+        }
+        .focused($focused)
+        .onAppear { draft = value }
+        .onChange(of: value) { _, newValue in
+            // Adopt every outside write even while focused (a menu or preset pick, a
+            // retired-model migration, the duplicate field committing), or the stale
+            // draft is written back on the next save. Only this field's own commit is
+            // left alone, so a debounced save doesn't strip the space being typed.
+            if !focused || newValue != draft.trimmingCharacters(in: .whitespacesAndNewlines) {
+                draft = newValue
+            }
+        }
+        .onChange(of: focused) { _, isFocused in
+            if !isFocused { save() }
+        }
+        .task(id: draft) {
+            // Instructions only feed the prompt, so a partial value is harmless, and
+            // switching apps to try an edit doesn't move focus. Single-line fields keep
+            // commit-on-Return: a half-typed host or model name must never be saved.
+            guard multiline else { return }
+            try? await Task.sleep(for: .milliseconds(750))
+            if !Task.isCancelled { save() }
+        }
+        .onDisappear(perform: save)
+        .onReceive(NotificationCenter.default.publisher(for: Self.commitNotification)) { _ in save() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            save() // Quit Murmur or a Sparkle relaunch
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
+            // Closing the settings window doesn't move focus; menus and panels don't count.
+            guard let window = note.object as? NSWindow, !(window is NSPanel),
+                  window.styleMask.contains(.titled) else { return }
+            save()
+        }
+    }
+
+    private var isDirty: Bool {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines) != value
+    }
+
+    private func save() {
+        guard isDirty else { return }
+        commit(draft.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }

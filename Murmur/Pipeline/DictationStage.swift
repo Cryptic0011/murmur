@@ -4,7 +4,8 @@ enum DictationStage: Sendable, Equatable {
     case loadingModel
     case transcribing
     case cleaning(provider: String)
-    case pasted(words: Int)
+    /// `note`: a one-off remark shown with the result (cleanup fell back, length limit hit).
+    case pasted(words: Int, note: String? = nil)
     case copiedOnly(message: String)
     case error(message: String)
 }

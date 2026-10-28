@@ -8,6 +8,7 @@ struct HistoryTab: View {
     @State private var selection: HistoryEntry.ID?
     @State private var confirmClearAll = false
     @State private var storageError: String?
+    @State private var quarantinedFile: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -80,10 +81,24 @@ struct HistoryTab: View {
                 }
             }
 
+            if let quarantinedFile {
+                HStack(spacing: 10) {
+                    Text("Your history file couldn't be read, so Murmur moved it aside as \(quarantinedFile.lastPathComponent) and started a fresh one.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([quarantinedFile])
+                    }
+                }
+            }
+
             if let storageError {
                 Text(storageError)
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
@@ -92,11 +107,12 @@ struct HistoryTab: View {
                 Button("Clear All", role: .destructive) {
                     confirmClearAll = true
                 }
-                .disabled(entries.isEmpty)
+                // An unreadable file shows no entries but still needs a reset path.
+                .disabled(entries.isEmpty && storageError == nil)
             }
         }
         .confirmationDialog(
-            "Delete all \(entries.count) saved dictations?",
+            entries.isEmpty ? "Reset the history file?" : "Delete all \(entries.count) saved dictations?",
             isPresented: $confirmClearAll,
             titleVisibility: .visible
         ) {
@@ -114,12 +130,22 @@ struct HistoryTab: View {
         .onAppear { reload() }
     }
 
+    private static let readErrorPrefix = "Couldn't read the history file:"
+
     private var selectedEntry: HistoryEntry? {
         entries.first(where: { $0.id == selection })
     }
 
     private func reload() {
-        entries = (try? store.read()) ?? []
+        do {
+            entries = try store.read()
+            if storageError?.hasPrefix(Self.readErrorPrefix) == true { storageError = nil }
+        } catch {
+            // Don't pass an unreadable file off as "no dictations yet".
+            entries = []
+            storageError = "\(Self.readErrorPrefix) \(error.localizedDescription) Clear All resets it."
+        }
+        quarantinedFile = store.quarantinedFileURL
         if !entries.contains(where: { $0.id == selection }) {
             selection = entries.last?.id
         }

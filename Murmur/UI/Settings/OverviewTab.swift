@@ -7,7 +7,10 @@ struct OverviewTab: View {
     let history: HistoryStore
     @ObservedObject var runtimeHealth: RuntimeHealthStore
     @ObservedObject var setup: DependencySetupCoordinator
+    @ObservedObject var updates: UpdateManager
     @State private var entries: [HistoryEntry] = []
+    @State private var historyError: String?
+    @State private var historyQuarantined = false
 
     // Single source of truth — RuntimeHealthStore already polls permissions;
     // a second view-local poller here used to disagree with the metric cards.
@@ -17,6 +20,15 @@ struct OverviewTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            switch updates.status {
+            case .available(let version):
+                updateAvailableCard(version: version, busy: false)
+            case .downloading(let version, _), .installing(let version):
+                updateAvailableCard(version: version, busy: true)
+            default:
+                EmptyView()
+            }
+
             if needsPermissions {
                 permissionsCard
             } else {
@@ -101,7 +113,19 @@ struct OverviewTab: View {
             }
 
             MurmurCard(title: "Recent Dictations", subtitle: "Latest saved entries with paste outcomes.") {
-                if entries.isEmpty {
+                // A note, not an error: history saved since the file was moved aside still shows.
+                if historyQuarantined, historyError == nil {
+                    Text("Your history file couldn't be read, so Murmur moved it aside and started fresh. See History for details.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let historyError {
+                    Text(historyError)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if entries.isEmpty {
                     Text("No saved dictations yet.")
                         .font(.system(size: 13, weight: .medium, design: .rounded))
                         .foregroundStyle(.secondary)
@@ -138,7 +162,14 @@ struct OverviewTab: View {
     }
 
     private func reload() {
-        entries = (try? history.read()) ?? []
+        do {
+            entries = try history.read()
+            historyError = nil
+        } catch {
+            entries = []
+            historyError = "Couldn't read dictation history: \(error.localizedDescription). Open History to reset it."
+        }
+        historyQuarantined = history.quarantinedFileURL != nil
     }
 
     private var sttModelLabel: String {
@@ -152,6 +183,8 @@ struct OverviewTab: View {
 
     private var primaryCleanupModelLabel: String {
         switch settings.primaryCleanupProvider {
+        case .builtIn:
+            return "Built-in rules"
         case .groqAPI:
             return settings.groqModel
         case .cerebrasAPI:
@@ -165,10 +198,38 @@ struct OverviewTab: View {
         }
     }
 
+    private func updateAvailableCard(version: String, busy: Bool) -> some View {
+        MurmurCard(
+            title: "Update Available",
+            subtitle: "Murmur \(version) is ready to install."
+        ) {
+            HStack(spacing: 12) {
+                Text(busy ? updates.status.summary : "One click — Murmur restarts and is back in a few seconds.")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if busy {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Button("Restart to Update") {
+                        updates.installAndRelaunch()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!updates.canCheckForUpdates)
+                }
+            }
+        }
+    }
+
     private var welcomeCard: some View {
         MurmurCard(
             title: "Welcome to Murmur",
-            subtitle: "Hold Right Option to dictate, release to paste. Everything you need lives in this window."
+            subtitle: (settings.toggleMode
+                ? "Tap \(runtimeHealth.snapshot.hotkeyLabel) to start dictating, tap again to paste."
+                : "Hold \(runtimeHealth.snapshot.hotkeyLabel) to dictate, release to paste.")
+                + " Everything you need lives in this window."
         ) {
             Text("Configure speech and cleanup providers in **Providers**, tweak hotkey and recording behavior in **General**, and review saved dictations under **History**.")
                 .font(.system(size: 13, weight: .medium, design: .rounded))
@@ -189,9 +250,9 @@ struct OverviewTab: View {
                     detail: "Capture audio while you hold the dictation key.",
                     granted: micGranted,
                     primaryLabel: "Grant Microphone",
-                    primary: requestMic,
-                    secondaryLabel: nil,
-                    secondary: nil
+                    primary: { PermissionHelper.requestMicrophone() },
+                    secondaryLabel: "Open Settings",
+                    secondary: { PermissionHelper.openPrivacyPane("Privacy_Microphone") }
                 )
                 permissionRow(
                     symbol: "hand.raised.fill",
@@ -199,12 +260,12 @@ struct OverviewTab: View {
                     detail: "Monitor the hotkey and paste into the focused app.",
                     granted: axGranted,
                     primaryLabel: "Grant Access",
-                    primary: requestAccessibility,
+                    primary: { PermissionHelper.requestAccessibility() },
                     secondaryLabel: "Open Settings",
-                    secondary: openAccessibilitySettings
+                    secondary: { PermissionHelper.openPrivacyPane("Privacy_Accessibility") }
                 )
                 if !axGranted {
-                    Text("Murmur picks the permission up automatically once toggled. If the hotkey still doesn't respond, quit and reopen Murmur.")
+                    Text("Murmur picks the permission up automatically once toggled. If the switch is on but Murmur still shows Missing, remove Murmur from the list with − and add it again.")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(.secondary)
                 }
@@ -260,6 +321,7 @@ struct OverviewTab: View {
                         Button(secondaryLabel, action: secondary)
                             .buttonStyle(.bordered)
                             .controlSize(.small)
+                            .accessibilityLabel("\(secondaryLabel) for \(title)")
                     }
                     Button(primaryLabel, action: primary)
                         .buttonStyle(.borderedProminent)
@@ -270,24 +332,8 @@ struct OverviewTab: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.black.opacity(0.04))
+                .fill(pillFill)
         )
-    }
-
-    private func requestMic() {
-        AVCaptureDevice.requestAccess(for: .audio) { _ in
-            Task { @MainActor in AppServices.runtimeHealth.refreshNow() }
-        }
-    }
-
-    private func requestAccessibility() {
-        _ = AccessibilityHelper.hasAccess(prompt: true)
-        openAccessibilitySettings()
-    }
-
-    private func openAccessibilitySettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
-        NSWorkspace.shared.open(url)
     }
 
     private func overviewPill(title: String, value: String) -> some View {

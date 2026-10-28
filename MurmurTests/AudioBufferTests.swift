@@ -20,6 +20,17 @@ struct AudioBufferTests {
         #expect(buf.didOverflow)
     }
 
+    @Test("samples(from:) returns only the tail, clamped to bounds")
+    func tail() {
+        var buf = AudioBuffer(maxSamples: 10)
+        _ = buf.append([1, 2, 3, 4, 5])
+        #expect(buf.samples(from: 3) == [4, 5])
+        #expect(buf.samples(from: 0) == [1, 2, 3, 4, 5])
+        #expect(buf.samples(from: -2) == [1, 2, 3, 4, 5])
+        #expect(buf.samples(from: 5).isEmpty)
+        #expect(buf.samples(from: 99).isEmpty)
+    }
+
     @Test("seconds at sample rate")
     func seconds() {
         var buf = AudioBuffer(maxSamples: 32_000)

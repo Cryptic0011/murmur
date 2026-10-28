@@ -51,6 +51,12 @@ struct CardChrome: ViewModifier {
     }
 }
 
+extension Color {
+    /// Subtle row/pill fill. Black-opacity fills vanish on dark backgrounds;
+    /// the system label colour flips with the appearance.
+    static let murmurRowFill = Color(nsColor: .quaternaryLabelColor).opacity(0.55)
+}
+
 extension View {
     func cardChrome(cornerRadius: CGFloat = 18, shadowRadius: CGFloat = 14, shadowY: CGFloat = 8) -> some View {
         modifier(CardChrome(cornerRadius: cornerRadius, shadowRadius: shadowRadius, shadowY: shadowY))
@@ -80,6 +86,9 @@ struct MurmurBackdrop: View {
                 .blur(radius: colorScheme == .dark ? 180 : 150)
                 .offset(x: 260, y: 260)
         }
+        // Rasterize the three large blurs once per size/appearance change
+        // instead of re-filtering them under every scroll and redraw.
+        .drawingGroup()
         .ignoresSafeArea()
     }
 
@@ -250,6 +259,8 @@ struct MurmurSidebarFooter: View {
         if !runtimeHealth.snapshot.accessibilityGranted {
             return "Grant Accessibility so Murmur can monitor the hotkey and paste."
         }
-        return "Hold \(runtimeHealth.snapshot.hotkeyLabel), speak, then release to inject text."
+        return settings.toggleMode
+            ? "Tap \(runtimeHealth.snapshot.hotkeyLabel), speak, then tap again to paste."
+            : "Hold \(runtimeHealth.snapshot.hotkeyLabel), speak, then release to paste."
     }
 }

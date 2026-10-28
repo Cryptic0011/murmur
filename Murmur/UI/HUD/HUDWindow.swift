@@ -7,24 +7,30 @@ final class HUDWindow {
     private let panel: NSPanel
     private let viewModel: HUDViewModel
     private var observer: NSObjectProtocol?
-    private var resizeObserver: NSObjectProtocol?
     private var cancellable: AnyCancellable?
-    private var partialCancellable: AnyCancellable?
+    private var settingsCancellable: AnyCancellable?
     /// A hide's fade-out completion must not order the panel out if a show
     /// happened while the animation ran (rapid paste → next dictation).
     private var visibilityGeneration = 0
+    /// The display chosen when the dictation started. Kept until the HUD hides so
+    /// the capsule never hops screens when the mouse crosses displays mid-session.
+    private var lockedScreen: NSScreen?
 
     init(viewModel: HUDViewModel) {
         self.viewModel = viewModel
         let host = NSHostingController(rootView: HUDView(vm: viewModel))
-        host.view.translatesAutoresizingMaskIntoConstraints = false
+        // The panel stays a fixed transparent rect and the capsule sizes itself
+        // inside it. Letting SwiftUI resize the window clipped the shadow, chopped
+        // shrink animations, hid the fade-out and re-centred a frame late.
+        host.sizingOptions = []
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 280, height: 36),
+            contentRect: NSRect(origin: .zero, size: HUDView.panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         panel.contentViewController = host
+        panel.setContentSize(HUDView.panelSize)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -44,41 +50,33 @@ final class HUDWindow {
             queue: .main
         ) { [weak self] _ in Task { @MainActor in self?.reposition() } }
 
-        // SwiftUI resizes the panel after stage/partial-text changes land, so
-        // recenter on the actual size, not the stale one at publish time.
-        resizeObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResizeNotification,
-            object: panel,
-            queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.reposition() } }
-
-        cancellable = viewModel.$stage.sink { [weak self, weak viewModel] _ in
+        cancellable = viewModel.$stage.sink { [weak self, weak viewModel] stage in
             DispatchQueue.main.async {
                 guard let self, let viewModel else { return }
-                self.reposition()
+                // A new dictation picks its display afresh; later stages keep it.
+                if case .recording = stage { self.lockedScreen = nil }
                 self.setVisible(viewModel.isVisible)
             }
         }
 
-        // The capsule widens when live preview text arrives — keep it centered.
-        partialCancellable = viewModel.$partialText
-            .map(\.isEmpty)
-            .removeDuplicates()
+        settingsCancellable = NotificationCenter.default.publisher(for: .settingsStoreDidChange)
             .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.reposition() }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.setVisible(self.viewModel.isVisible)
+                }
             }
     }
 
     deinit {
         if let o = observer { NotificationCenter.default.removeObserver(o) }
-        if let o = resizeObserver { NotificationCenter.default.removeObserver(o) }
     }
 
     func setVisible(_ visible: Bool) {
         visibilityGeneration += 1
         let generation = visibilityGeneration
-        if visible {
-            reposition()
+        if visible && (AppServices.settings.showHUD || viewModel.forcesVisible) {
+            if lockedScreen == nil { reposition() }
             panel.orderFrontRegardless()
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.2
@@ -92,25 +90,31 @@ final class HUDWindow {
                 Task { @MainActor in
                     guard let self, self.visibilityGeneration == generation else { return }
                     self.panel.orderOut(nil)
+                    self.lockedScreen = nil
                 }
             })
         }
     }
 
     private func reposition() {
+        if let locked = lockedScreen, !NSScreen.screens.contains(locked) { lockedScreen = nil }
         // NSScreen.main follows the key window, which a nonactivating background
-        // panel app rarely owns — center on the screen the user is actually on.
+        // panel app rarely owns — use the screen the user is on when dictation starts.
+        // ponytail: mouse screen; the focused window's screen (via AX) would suit
+        // keyboard-only users better.
         let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+        let screen = lockedScreen
+            ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
         guard let screen else { return }
+        lockedScreen = screen
         let frame = screen.visibleFrame
-        let size = panel.frame.size
-        let origin = NSPoint(
-            x: frame.midX - size.width / 2,
-            y: frame.minY + 60
-        )
-        panel.setFrameOrigin(origin)
+        // Capsule bottom sits 60pt above the visible frame, as before the panel
+        // grew transparent margins.
+        panel.setFrameOrigin(NSPoint(
+            x: frame.midX - HUDView.panelSize.width / 2,
+            y: frame.minY + 60 - HUDView.bottomMargin
+        ))
     }
 }

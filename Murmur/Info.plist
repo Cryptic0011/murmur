@@ -31,14 +31,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSUIElement</key>
 	<true/>
-	<key>MurmurUpdateCheckIntervalHours</key>
-	<string>$(MURMUR_UPDATE_CHECK_INTERVAL_HOURS)</string>
-	<key>MurmurUpdateReleasesPageURL</key>
-	<string>$(MURMUR_UPDATE_RELEASES_PAGE_URL)</string>
-	<key>MurmurUpdateRepository</key>
-	<string>$(MURMUR_UPDATE_REPOSITORY)</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Murmur looks for speech models that earlier versions downloaded to your Documents folder and copies them to Murmur's Application Support folder.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Murmur listens to your voice while you hold the dictation hotkey, transcribes it locally, and pastes the cleaned text where you're typing.</string>
+	<string>Murmur records your voice while you dictate, transcribes it with the speech engine you choose (on-device by default; a cloud provider such as Groq receives the audio only if you select it), and pastes the text where you're typing.</string>
 	<key>SUAllowsAutomaticUpdates</key>
 	<true/>
 	<key>SUEnableAutomaticChecks</key>
@@ -47,5 +43,7 @@
 	<string>https://github.com/Cryptic0011/murmur/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>GPa3gezkwPZ2JAkqkXxa3DDSirwWVGd7kr1/H1Uu0sY=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>43200</integer>
 </dict>
 </plist>
