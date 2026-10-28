@@ -60,6 +60,7 @@ enum DependencySetupState: Equatable, Sendable {
 
 struct DependencySetupSnapshot: Equatable, Sendable {
     var whisper: DependencySetupState
+    var parakeet: DependencySetupState
     var groq: DependencySetupState
     var ollama: DependencySetupState
     var appleIntelligence: DependencySetupState
@@ -67,11 +68,13 @@ struct DependencySetupSnapshot: Equatable, Sendable {
     var primaryCleanupProvider: CleanupProviderOption
     var secondaryCleanupProvider: CleanupProviderOption?
     var whisperModel: String
+    var parakeetModel: String
     var groqTranscriptionModel: String
     var groqCleanupModel: String
     var ollamaModel: String
 
     var usesWhisperLocal: Bool { transcriptionProvider == .whisperLocal }
+    var usesParakeetLocal: Bool { transcriptionProvider == .parakeetLocal }
     var usesGroqAPI: Bool {
         transcriptionProvider == .groqAPI ||
             primaryCleanupProvider == .groqAPI ||
@@ -86,11 +89,12 @@ struct DependencySetupSnapshot: Equatable, Sendable {
     }
 
     var isRunning: Bool {
-        whisper.isRunning || groq.isRunning || ollama.isRunning || appleIntelligence.isRunning
+        whisper.isRunning || parakeet.isRunning || groq.isRunning || ollama.isRunning || appleIntelligence.isRunning
     }
 
     var hasAttention: Bool {
         (usesWhisperLocal && whisper.isActionRequired) ||
+            (usesParakeetLocal && parakeet.isActionRequired) ||
             (usesGroqAPI && groq.isActionRequired) ||
             (usesOllama && ollama.isActionRequired) ||
             (usesAppleIntelligence && appleIntelligence.isActionRequired) ||
@@ -99,6 +103,7 @@ struct DependencySetupSnapshot: Equatable, Sendable {
 
     var isFailure: Bool {
         if usesWhisperLocal, case .failure = whisper { return true }
+        if usesParakeetLocal, case .failure = parakeet { return true }
         if usesGroqAPI, case .failure = groq { return true }
         if usesOllama, case .failure = ollama { return true }
         if usesAppleIntelligence, case .failure = appleIntelligence { return true }
@@ -113,10 +118,12 @@ struct DependencySetupSnapshot: Equatable, Sendable {
 
     var detail: String {
         if usesWhisperLocal, whisper.isRunning { return whisper.detail }
+        if usesParakeetLocal, parakeet.isRunning { return parakeet.detail }
         if usesGroqAPI, groq.isRunning { return groq.detail }
         if usesOllama, ollama.isRunning { return ollama.detail }
         if usesAppleIntelligence, appleIntelligence.isRunning { return appleIntelligence.detail }
         if usesWhisperLocal, whisper.isActionRequired || isFailureState(whisper) { return whisper.detail }
+        if usesParakeetLocal, parakeet.isActionRequired || isFailureState(parakeet) { return parakeet.detail }
         if usesGroqAPI, groq.isActionRequired || isFailureState(groq) { return groq.detail }
         if usesOllama, ollama.isActionRequired || isFailureState(ollama) { return ollama.detail }
         if usesAppleIntelligence, appleIntelligence.isActionRequired || isFailureState(appleIntelligence) {
@@ -142,6 +149,9 @@ struct DependencySetupSnapshot: Equatable, Sendable {
             whisper: settings.usesLocalWhisper
                 ? .idle("Whisper model has not been prepared yet.")
                 : .success("Whisper local transcription is not selected."),
+            parakeet: settings.usesLocalParakeet
+                ? .idle("Parakeet model has not been prepared yet.")
+                : .success("Parakeet local transcription is not selected."),
             groq: settings.usesGroqAPI
                 ? .idle("Groq API has not been checked yet.")
                 : .success("Groq API is not selected."),
@@ -155,6 +165,7 @@ struct DependencySetupSnapshot: Equatable, Sendable {
             primaryCleanupProvider: settings.primaryCleanupProvider,
             secondaryCleanupProvider: settings.secondaryCleanupProvider,
             whisperModel: settings.whisperModel,
+            parakeetModel: settings.parakeetModel,
             groqTranscriptionModel: settings.groqTranscriptionModel,
             groqCleanupModel: settings.groqModel,
             ollamaModel: settings.ollamaModel
@@ -172,71 +183,72 @@ final class DependencySetupCoordinator: ObservableObject {
     @Published private(set) var snapshot: DependencySetupSnapshot
 
     private let settings: SettingsStore
-    private var settingsObserver: NSObjectProtocol?
+    /// The runtime's providers: setup awaits the same speech model instead of loading a copy.
+    private let providers: ProviderCache
+    private var observers: [NSObjectProtocol] = []
     private var setupTask: Task<Void, Never>?
     private var ollamaWatcher: Task<Void, Never>?
+    private var lastConfig: Config?
     /// Bumped every time a new setup run starts; async callbacks from a
     /// superseded run compare against it and drop their updates.
     private var setupGeneration = 0
+    /// Bumped only when the speech model to prepare changes. A restart for a cleanup or key
+    /// change joins the in-flight model load, which drops the new run's progress callback,
+    /// so the first run's ticks have to keep reaching the card.
+    private var speechGeneration = 0
 
-    init(settings: SettingsStore) {
+    init(settings: SettingsStore, providers: ProviderCache) {
         self.settings = settings
+        self.providers = providers
         self.snapshot = .initial(settings: settings)
 
-        settingsObserver = NotificationCenter.default.addObserver(
-            forName: .settingsStoreDidChange,
-            object: settings,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.startAutomaticSetup()
-            }
+        let restart: @Sendable (Notification) -> Void = { [weak self] _ in
+            Task { @MainActor in self?.startAutomaticSetup() }
         }
+        // A saved key changes Config.hasGroqKey, so the Groq card updates without a Retry.
+        observers = [
+            NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: settings, queue: .main, using: restart),
+            NotificationCenter.default.addObserver(forName: .apiKeysDidChange, object: nil, queue: .main, using: restart),
+        ]
     }
 
     deinit {
-        if let settingsObserver {
-            NotificationCenter.default.removeObserver(settingsObserver)
-        }
+        observers.forEach(NotificationCenter.default.removeObserver)
         setupTask?.cancel()
         ollamaWatcher?.cancel()
     }
 
     func startAutomaticSetup(force: Bool = false) {
+        let usesGroq = settings.usesGroqAPI
         let config = Config(
             whisperModel: settings.whisperModel,
+            parakeetModel: settings.parakeetModel,
             groqTranscriptionModel: settings.groqTranscriptionModel,
             groqCleanupModel: settings.groqModel,
             ollamaModel: settings.ollamaModel,
             transcriptionProvider: settings.transcriptionProvider,
             primaryCleanupProvider: settings.primaryCleanupProvider,
-            secondaryCleanupProvider: settings.secondaryCleanupProvider
+            secondaryCleanupProvider: settings.secondaryCleanupProvider,
+            hasGroqKey: usesGroq && !providers.keys.groq.isEmpty
         )
 
         // Unchanged config never restarts setup — settingsStoreDidChange fires for
-        // every setter (sliders, toggles), and re-running would reload models and
-        // re-probe providers on each keystroke.
-        if !force,
-           snapshot.transcriptionProvider == config.transcriptionProvider,
-           snapshot.primaryCleanupProvider == config.primaryCleanupProvider,
-           snapshot.secondaryCleanupProvider == config.secondaryCleanupProvider,
-           snapshot.whisperModel == config.whisperModel,
-           snapshot.groqTranscriptionModel == config.groqTranscriptionModel,
-           snapshot.groqCleanupModel == config.groqCleanupModel,
-           snapshot.ollamaModel == config.ollamaModel
-        {
-            return
-        }
+        // every setter (sliders, toggles), and re-running would re-probe providers.
+        if !force, config == lastConfig { return }
+        if !config.preparesSameSpeechModel(as: lastConfig) { speechGeneration += 1 }
+        lastConfig = config
 
         setupTask?.cancel()
         ollamaWatcher?.cancel()
         setupGeneration += 1
         let generation = setupGeneration
+        let speechGeneration = self.speechGeneration
         snapshot = .initial(settings: settings)
 
         setupTask = Task { [weak self] in
-            guard let self else { return }
-            await self.prepareDependencies(config: config, generation: generation)
+            await self?.prepareDependencies(
+                config: config, generation: generation, speechGeneration: speechGeneration, settle: !force
+            )
         }
     }
 
@@ -254,40 +266,112 @@ final class DependencySetupCoordinator: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    private struct Config: Sendable {
+    private struct Config: Equatable, Sendable {
         let whisperModel: String
+        let parakeetModel: String
         let groqTranscriptionModel: String
         let groqCleanupModel: String
         let ollamaModel: String
         let transcriptionProvider: TranscriptionProviderOption
         let primaryCleanupProvider: CleanupProviderOption
         let secondaryCleanupProvider: CleanupProviderOption?
+        let hasGroqKey: Bool
+
+        func preparesSameSpeechModel(as other: Config?) -> Bool {
+            guard let other else { return false }
+            return transcriptionProvider == other.transcriptionProvider &&
+                whisperModel == other.whisperModel && parakeetModel == other.parakeetModel
+        }
     }
 
-    private func prepareDependencies(config: Config, generation: Int) async {
+    private func prepareDependencies(config: Config, generation: Int, speechGeneration: Int, settle: Bool) async {
         // The checks are independent; run them concurrently so a long Whisper
         // download doesn't leave the other status cards on "not checked yet".
-        async let whisper: Void = prepareWhisper(config: config)
+        async let whisper: Void = prepareWhisper(config: config, speechGeneration: speechGeneration)
+        async let parakeet: Void = prepareParakeet(config: config, speechGeneration: speechGeneration)
         async let groq: Void = prepareGroq(config: config)
         async let apple: Void = prepareAppleIntelligence(config: config)
-        async let ollama: Void = prepareOllama(config: config, generation: generation)
-        _ = await (whisper, groq, apple, ollama)
+        async let ollama: Void = prepareOllama(config: config, generation: generation, settle: settle)
+        _ = await (whisper, parakeet, groq, apple, ollama)
     }
 
-    private func prepareWhisper(config: Config) async {
+    private func prepareWhisper(config: Config, speechGeneration: Int) async {
         guard config.transcriptionProvider == .whisperLocal else {
             updateWhisper(.success("Whisper local transcription is not selected."))
             return
         }
-        updateWhisper(.running("Preparing Whisper model \(config.whisperModel)…", progress: nil))
+        let model = config.whisperModel
+        guard let provider = providers.transcriber(settings: settings) as? WhisperKitProvider else { return }
+        updateWhisper(.running("Preparing Whisper model \(model)…", progress: nil))
         do {
-            let provider = WhisperKitProvider(modelName: config.whisperModel)
-            try await provider.ensureLoaded()
+            // The runtime's own instance: this joins its load (and download) rather than
+            // loading a second copy of the model.
+            try await provider.ensureLoaded(onProgress: progressHandler(speechGeneration: speechGeneration) { [weak self] state in
+                // A late tick must not overwrite the final state.
+                guard let self, self.snapshot.whisper.isRunning else { return }
+                self.updateWhisper(state)
+            } running: { fraction in
+                fraction < 1
+                    ? .running("Downloading Whisper model \(model)…", progress: fraction)
+                    : .running("Loading Whisper model \(model)…", progress: nil)
+            })
             guard !Task.isCancelled else { return }
-            updateWhisper(.success("Whisper model \(config.whisperModel) is ready."))
+            updateWhisper(.success("Whisper model \(model) is ready."))
         } catch {
             guard !Task.isCancelled else { return }
-            updateWhisper(.failure("Whisper setup failed for \(config.whisperModel)."))
+            updateWhisper(.failure("Whisper setup failed for \(model): \(error.localizedDescription)"))
+        }
+    }
+
+    private func prepareParakeet(config: Config, speechGeneration: Int) async {
+        guard config.transcriptionProvider == .parakeetLocal else {
+            updateParakeet(.success("Parakeet local transcription is not selected."))
+            return
+        }
+        let model = "Parakeet \(config.parakeetModel)"
+        guard let provider = providers.transcriber(settings: settings) as? ParakeetProvider else { return }
+        updateParakeet(.running("Preparing \(model)…", progress: nil))
+        do {
+            try await provider.ensureLoaded(onProgress: progressHandler(speechGeneration: speechGeneration) { [weak self] state in
+                guard let self, self.snapshot.parakeet.isRunning else { return }
+                self.updateParakeet(state)
+            } running: { fraction in
+                Self.parakeetRunningState(model: model, fraction: fraction)
+            })
+            guard !Task.isCancelled else { return }
+            updateParakeet(.success("\(model) is ready."))
+        } catch {
+            guard !Task.isCancelled else { return }
+            updateParakeet(.failure("\(model) setup failed: \(error.localizedDescription)"))
+        }
+    }
+
+    /// FluidAudio reports the download as 0...0.5 and the CoreML compile as 0.5...1; cached
+    /// models start at 0.5, so only the lower half is a download.
+    nonisolated static func parakeetRunningState(model: String, fraction: Double) -> DependencySetupState {
+        fraction < 0.5
+            ? .running("Downloading \(model) (about 600 MB, first run only)…", progress: fraction * 2)
+            : .running("Loading \(model)…", progress: nil)
+    }
+
+    // ponytail: progress reaches the card only when setup starts the shared load; a load
+    // the runtime warm-up already began shows as indeterminate until it finishes.
+    /// A load-progress callback (any thread) that reports whole-percent steps forward to
+    /// `update` on the main actor while the speech model it was started for is still the one
+    /// being prepared, across setup restarts that only touch cleanup or keys.
+    private func progressHandler(
+        speechGeneration: Int,
+        update: @escaping @MainActor (DependencySetupState) -> Void,
+        running: @escaping @Sendable (Double) -> DependencySetupState
+    ) -> @Sendable (Double) -> Void {
+        let throttle = ProgressThrottle()
+        return { [weak self] fraction in
+            guard throttle.shouldReport(fraction) else { return }
+            let state = running(fraction)
+            Task { @MainActor in
+                guard let self, self.speechGeneration == speechGeneration else { return }
+                update(state)
+            }
         }
     }
 
@@ -299,9 +383,7 @@ final class DependencySetupCoordinator: ObservableObject {
             updateGroq(.success("Groq API is not selected."))
             return
         }
-        let storedKey = try? KeychainStore.groqAPIKey.get()
-        let hasKey = !(storedKey ?? "").isEmpty
-        if !hasKey {
+        if !config.hasGroqKey {
             updateGroq(.actionRequired("Add a Groq API key to use \(config.transcriptionProvider == .groqAPI ? config.groqTranscriptionModel : config.groqCleanupModel)."))
         } else {
             let groqRole: String
@@ -332,12 +414,18 @@ final class DependencySetupCoordinator: ObservableObject {
         }
     }
 
-    private func prepareOllama(config: Config, generation: Int) async {
+    private func prepareOllama(config: Config, generation: Int, settle: Bool) async {
         let usesLocalOllama = config.primaryCleanupProvider == .ollamaLocal ||
             config.secondaryCleanupProvider == .ollamaLocal
         guard usesLocalOllama else {
             updateOllama(.success("Ollama local cleanup is not selected."))
             return
+        }
+        // Settle before an automatic run: a burst of edits (a model name committed, then
+        // the provider switched) must not start `ollama serve` or a pull per step.
+        if settle {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
         }
         let ollamaModel = config.ollamaModel
 
@@ -360,7 +448,12 @@ final class DependencySetupCoordinator: ObservableObject {
         }
 
         if await GemmaOllamaProvider.isModelAvailable(model: ollamaModel) {
+            guard !Task.isCancelled else { return }
             updateOllama(.success("Ollama model \(ollamaModel) is ready."))
+            // The cached provider's own warm-up gives up while the server is down, and this
+            // run may be what started it: load the model now, not on the first dictation.
+            // Residency lives in the server, so a fresh client instance is enough.
+            Task.detached { await GemmaOllamaProvider(model: ollamaModel).warmUp() }
             return
         }
 
@@ -408,6 +501,11 @@ final class DependencySetupCoordinator: ObservableObject {
         snapshot.whisperModel = settings.whisperModel
     }
 
+    private func updateParakeet(_ state: DependencySetupState) {
+        snapshot.parakeet = state
+        snapshot.parakeetModel = settings.parakeetModel
+    }
+
     private func updateGroq(_ state: DependencySetupState) {
         snapshot.groq = state
         snapshot.groqTranscriptionModel = settings.groqTranscriptionModel
@@ -421,5 +519,19 @@ final class DependencySetupCoordinator: ObservableObject {
 
     private func updateAppleIntelligence(_ state: DependencySetupState) {
         snapshot.appleIntelligence = state
+    }
+}
+
+/// Forward-only, whole-percent filter for download progress that arrives many times a second.
+private final class ProgressThrottle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = -1.0
+
+    func shouldReport(_ fraction: Double) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard fraction >= last + 0.01 || (fraction >= 1 && last < 1) else { return false }
+        last = fraction
+        return true
     }
 }

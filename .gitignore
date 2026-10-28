@@ -19,7 +19,8 @@ xcuserdata/
 .swiftpm/
 .build/
 Packages/
-Package.resolved
+# Package.resolved is committed (Murmur.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/)
+# so every machine builds the same dependency versions.
 
 # IDE
 .vscode/

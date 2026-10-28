@@ -7,11 +7,20 @@ import Speech
 actor AppleSpeechProvider: TranscriptionProvider {
     nonisolated let displayName = "Apple Speech (local)"
 
-    enum AppleSpeechError: Error {
+    enum AppleSpeechError: Error, LocalizedError {
         case unsupportedLocale
         case bufferAllocationFailed
         case assetUnavailable
         case emptyResult
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedLocale: return "Apple Speech doesn't support this language."
+            case .bufferAllocationFailed: return "Apple Speech couldn't prepare the audio."
+            case .assetUnavailable: return "The Apple Speech model isn't installed yet."
+            case .emptyResult: return "No speech detected."
+            }
+        }
     }
 
     private let locale: Locale
@@ -47,10 +56,7 @@ actor AppleSpeechProvider: TranscriptionProvider {
             }
         }
 
-        var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
-        let inputStream = AsyncStream<AnalyzerInput> { continuation in
-            inputContinuation = continuation
-        }
+        let (inputStream, inputContinuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
 
@@ -67,9 +73,11 @@ actor AppleSpeechProvider: TranscriptionProvider {
 
         let started = Date()
         try await analyzer.start(inputSequence: inputStream)
-        inputContinuation?.yield(AnalyzerInput(buffer: buffer))
-        inputContinuation?.finish()
-        try await analyzer.finalizeAndFinish(through: .zero)
+        inputContinuation.yield(AnalyzerInput(buffer: buffer))
+        inputContinuation.finish()
+        // Finalize everything that was fed in. finalizeAndFinish(through: .zero) stopped
+        // at t=0, so audio past the start could be dropped before any final result.
+        try await analyzer.finalizeAndFinishThroughEndOfInput()
 
         let text = try await collector.value.trimmingCharacters(in: .whitespacesAndNewlines)
         log.info("Apple Speech transcribed in \(Date().timeIntervalSince(started))s")

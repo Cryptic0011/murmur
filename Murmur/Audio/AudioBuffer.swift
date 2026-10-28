@@ -23,6 +23,12 @@ struct AudioBuffer {
         didOverflow = false
     }
 
+    /// Copy of the samples from `start` on (clamped), so a poller can take just
+    /// the new tail instead of the whole recording.
+    func samples(from start: Int) -> [Float] {
+        Array(samples[min(max(0, start), samples.count)...])
+    }
+
     func seconds(sampleRate: Double) -> Double {
         Double(samples.count) / sampleRate
     }

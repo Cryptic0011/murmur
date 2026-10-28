@@ -42,12 +42,32 @@ enum TranscriptionProviderOption: String, Codable, CaseIterable, Identifiable, S
     static var availableCases: [TranscriptionProviderOption] {
         allCases.filter(\.isAvailableOnThisSystem)
     }
+
+    /// The engine a fresh install starts on: Parakeet on Apple Silicon (v2 for English,
+    /// v3 for other languages), WhisperKit elsewhere. Existing installs are never switched.
+    static func freshInstallDefault(
+        appleSilicon: Bool = isAppleSilicon,
+        preferredLanguage: String? = Locale.preferredLanguages.first
+    ) -> (provider: TranscriptionProviderOption, parakeetModel: String?) {
+        guard appleSilicon else { return (.whisperLocal, nil) }
+        let english = preferredLanguage?.lowercased().hasPrefix("en") ?? true
+        return (.parakeetLocal, english ? "v2" : "v3")
+    }
+
+    static var isAppleSilicon: Bool {
+        #if arch(arm64)
+        return true
+        #else
+        return false
+        #endif
+    }
 }
 
 enum CleanupProviderOption: String, Codable, CaseIterable, Identifiable, Sendable {
     case groqAPI
     case cerebrasAPI
     case customAPI
+    case builtIn
     case ollamaLocal
     case appleFoundationModels
 
@@ -57,6 +77,7 @@ enum CleanupProviderOption: String, Codable, CaseIterable, Identifiable, Sendabl
         switch self {
         case .groqAPI: return "Groq API"
         case .cerebrasAPI: return "Cerebras API"
+        case .builtIn: return "Built-in rules only"
         case .customAPI: return "Custom endpoint"
         case .ollamaLocal: return "Ollama"
         case .appleFoundationModels: return "Apple Intelligence (local)"
@@ -66,13 +87,13 @@ enum CleanupProviderOption: String, Codable, CaseIterable, Identifiable, Sendabl
     var familyLabel: String {
         switch self {
         case .groqAPI, .cerebrasAPI, .customAPI: return "API"
-        case .ollamaLocal, .appleFoundationModels: return "Local"
+        case .builtIn, .ollamaLocal, .appleFoundationModels: return "Local"
         }
     }
 
     var isAvailableOnThisSystem: Bool {
         switch self {
-        case .groqAPI, .cerebrasAPI, .customAPI, .ollamaLocal: return true
+        case .builtIn, .groqAPI, .cerebrasAPI, .customAPI, .ollamaLocal: return true
         case .appleFoundationModels:
             if #available(macOS 26.0, *) { return true }
             return false
@@ -83,8 +104,10 @@ enum CleanupProviderOption: String, Codable, CaseIterable, Identifiable, Sendabl
         allCases.filter(\.isAvailableOnThisSystem)
     }
 
+    /// The keyless, install-free local choice: Apple Intelligence when usable, otherwise
+    /// the built-in rules. Never Ollama, which most Macs don't have installed.
     static var defaultFallback: CleanupProviderOption {
-        appleIntelligenceUsable ? .appleFoundationModels : .ollamaLocal
+        appleIntelligenceUsable ? .appleFoundationModels : .builtIn
     }
 
     /// Cached per launch — availability only changes via System Settings.
@@ -101,9 +124,49 @@ extension Notification.Name {
 @MainActor
 final class SettingsStore: ObservableObject {
     private let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    static let defaultGroqModel = "openai/gpt-oss-20b"
+    static let defaultCerebrasModel = "gpt-oss-120b"
+
+    /// Bumped when a one-time settings migration is added; see migrate().
+    private static let settingsVersion = 1
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        migrate()
+    }
+
+    /// One-time rewrites, guarded by a stored version so later launches never revert a
+    /// value the user picked deliberately. Getters fall back to the defaults on their own,
+    /// so nothing is written into empty keys (a stored default would look like a choice).
+    private func migrate() {
+        guard defaults.integer(forKey: Key.settingsVersion) < 1 else { return }
+        // v1: retired llama cleanup defaults → their gpt-oss replacements.
+        switch defaults.string(forKey: Key.groqModel) {
+        case "llama-3.3-70b-versatile": defaults.set("openai/gpt-oss-120b", forKey: Key.groqModel)
+        case "llama-3.1-8b-instant": defaults.set(Self.defaultGroqModel, forKey: Key.groqModel)
+        default: break
+        }
+        if let cerebras = defaults.string(forKey: Key.cerebrasModel), ["llama3.1-8b", "llama-3.3-70b"].contains(cerebras) {
+            defaults.set(Self.defaultCerebrasModel, forKey: Key.cerebrasModel)
+        }
+        // v1: pin the speech engine. Existing installs keep WhisperKit, the old implicit
+        // default; a fresh install starts on the faster engine for this Mac.
+        if defaults.string(forKey: Key.transcriptionProvider) == nil {
+            let existingInstall = defaults.bool(forKey: Key.onboardingComplete) ||
+                defaults.object(forKey: Key.whisperModel) != nil
+            let fresh = TranscriptionProviderOption.freshInstallDefault()
+            defaults.set((existingInstall ? .whisperLocal : fresh.provider).rawValue, forKey: Key.transcriptionProvider)
+            if !existingInstall, let parakeet = fresh.parakeetModel, defaults.object(forKey: Key.parakeetModel) == nil {
+                defaults.set(parakeet, forKey: Key.parakeetModel)
+            }
+        }
+        defaults.set(Self.settingsVersion, forKey: Key.settingsVersion)
+    }
 
     private enum Key {
+        static let playSounds = "playSounds"
+        static let showHUD = "showHUD"
+        static let llmCleanupWordThreshold = "llmCleanupWordThreshold"
         static let maxRecordingSeconds = "maxRecordingSeconds"
         static let microphoneDeviceUID = "microphoneDeviceUID"
         static let cleanupFallbackEnabled = "cleanupFallbackEnabled"
@@ -135,18 +198,50 @@ final class SettingsStore: ObservableObject {
         static let showMenuBarIcon = "showMenuBarIcon"
         static let launchAtLogin = "launchAtLogin"
         static let automaticUpdateChecks = "automaticUpdateChecks"
-        static let lastUpdateCheckAt = "lastUpdateCheckAt"
+        static let preferBuiltInMicOverBluetooth = "preferBuiltInMicOverBluetooth"
+        static let allowURLControl = "allowURLControl"
+        static let settingsVersion = "settingsVersion"
+        /// Written by AppDelegate; read here only to tell an upgrade from a fresh install.
+        static let onboardingComplete = "onboardingComplete"
     }
+
+    private var changePosted = false
 
     private func notifyChanged() {
         // objectWillChange must fire before the mutation is observed (we're @MainActor,
-        // called synchronously from setters); the rebuild notification stays async so
-        // rapid consecutive writes coalesce into one pipeline rebuild per runloop.
+        // called synchronously from setters). The rebuild notification is posted once per
+        // runloop turn, however many setters ran in it.
         objectWillChange.send()
+        guard !changePosted else { return }
+        changePosted = true
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            NotificationCenter.default.post(name: .settingsStoreDidChange, object: self)
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.changePosted = false
+                NotificationCenter.default.post(name: .settingsStoreDidChange, object: self)
+            }
         }
+    }
+
+    /// A stored string with surrounding whitespace removed; `fallback` when unset or blank.
+    private func nonBlankString(_ key: String, fallback: String) -> String {
+        let value = defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? fallback : value
+    }
+
+    var playSounds: Bool {
+        get { defaults.object(forKey: Key.playSounds) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.playSounds); notifyChanged() }
+    }
+
+    var showHUD: Bool {
+        get { defaults.object(forKey: Key.showHUD) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.showHUD); notifyChanged() }
+    }
+
+    var llmCleanupWordThreshold: Int {
+        get { max(0, min(200, defaults.object(forKey: Key.llmCleanupWordThreshold) as? Int ?? 12)) }
+        set { defaults.set(max(0, min(200, newValue)), forKey: Key.llmCleanupWordThreshold); notifyChanged() }
     }
 
     var maxRecordingSeconds: Int {
@@ -177,7 +272,8 @@ final class SettingsStore: ObservableObject {
         get {
             guard let raw = defaults.string(forKey: Key.transcriptionProvider),
                   let provider = TranscriptionProviderOption(rawValue: raw) else {
-                return .whisperLocal
+                // migrate() pins a value at first launch; this only covers a removed key.
+                return TranscriptionProviderOption.freshInstallDefault().provider
             }
             return provider
         }
@@ -204,7 +300,7 @@ final class SettingsStore: ObservableObject {
     }
 
     var groqTranscriptionModel: String {
-        get { defaults.string(forKey: Key.groqTranscriptionModel) ?? "whisper-large-v3-turbo" }
+        get { nonBlankString(Key.groqTranscriptionModel, fallback: "whisper-large-v3-turbo") }
         set { defaults.set(newValue, forKey: Key.groqTranscriptionModel); notifyChanged() }
     }
 
@@ -216,8 +312,8 @@ final class SettingsStore: ObservableObject {
                 return CleanupProviderOption.appleIntelligenceUsable ? .appleFoundationModels : .groqAPI
             }
             // A stored provider that no longer exists (removed options like the old
-            // CLI providers) or isn't available on this system coerces to a keyless
-            // local default, not a cloud API the user may have no key for.
+            // CLI providers) or isn't available on this system coerces to a keyless,
+            // install-free local default, not a cloud API the user may have no key for.
             guard let provider = CleanupProviderOption(rawValue: raw),
                   provider.isAvailableOnThisSystem else {
                 return .defaultFallback
@@ -226,8 +322,11 @@ final class SettingsStore: ObservableObject {
         }
         set {
             defaults.set(newValue.rawValue, forKey: Key.primaryCleanupProvider)
-            if secondaryCleanupProvider == newValue {
+            // Compare the stored value: the secondary getter already hides a fallback equal
+            // to the primary, and a hidden one would come back when the primary changes.
+            if defaults.string(forKey: Key.secondaryCleanupProvider) == newValue.rawValue {
                 defaults.removeObject(forKey: Key.secondaryCleanupProvider)
+                defaults.set(false, forKey: Key.cleanupFallbackEnabled)
             }
             notifyChanged()
         }
@@ -238,7 +337,8 @@ final class SettingsStore: ObservableObject {
             if let raw = defaults.string(forKey: Key.secondaryCleanupProvider),
                let provider = CleanupProviderOption(rawValue: raw)
             {
-                return provider.isAvailableOnThisSystem ? provider : CleanupProviderOption.defaultFallback
+                let fallback = provider.isAvailableOnThisSystem ? provider : CleanupProviderOption.defaultFallback
+                return fallback == primaryCleanupProvider ? nil : fallback
             }
 
             // Fallback is on by default only when it's zero-config (Apple
@@ -262,12 +362,12 @@ final class SettingsStore: ObservableObject {
     }
 
     var groqModel: String {
-        get { defaults.string(forKey: Key.groqModel) ?? "llama-3.1-8b-instant" }
+        get { nonBlankString(Key.groqModel, fallback: Self.defaultGroqModel) }
         set { defaults.set(newValue, forKey: Key.groqModel); notifyChanged() }
     }
 
     var cerebrasModel: String {
-        get { defaults.string(forKey: Key.cerebrasModel) ?? "llama3.1-8b" }
+        get { nonBlankString(Key.cerebrasModel, fallback: Self.defaultCerebrasModel) }
         set { defaults.set(newValue, forKey: Key.cerebrasModel); notifyChanged() }
     }
 
@@ -406,14 +506,19 @@ final class SettingsStore: ObservableObject {
         set { defaults.set(newValue, forKey: Key.automaticUpdateChecks); notifyChanged() }
     }
 
-    var lastUpdateCheckAt: Date? {
-        get { defaults.object(forKey: Key.lastUpdateCheckAt) as? Date }
-        set {
-            defaults.set(newValue, forKey: Key.lastUpdateCheckAt)
-            // UI invalidation only — deliberately no settingsStoreDidChange, which
-            // would rebuild the provider pipeline for a timestamp.
-            objectWillChange.send()
-        }
+    /// Record from the Mac's own mic when the system default input is a Bluetooth headset
+    /// (not when a mic is pinned, nor while the lid is closed), so the headset keeps its
+    /// high-quality output profile (AudioRecorder avoidBluetoothInput).
+    var preferBuiltInMicOverBluetooth: Bool {
+        get { defaults.bool(forKey: Key.preferBuiltInMicOverBluetooth) }
+        set { defaults.set(newValue, forKey: Key.preferBuiltInMicOverBluetooth); notifyChanged() }
+    }
+
+    /// murmur:// links can start, stop and cancel dictation. Off by default: any app or
+    /// web page can open them.
+    var allowURLControl: Bool {
+        get { defaults.bool(forKey: Key.allowURLControl) }
+        set { defaults.set(newValue, forKey: Key.allowURLControl); notifyChanged() }
     }
 
     var appOverrides: [AppOverride] {
@@ -432,6 +537,10 @@ final class SettingsStore: ObservableObject {
 
     var usesLocalWhisper: Bool {
         transcriptionProvider == .whisperLocal
+    }
+
+    var usesLocalParakeet: Bool {
+        transcriptionProvider == .parakeetLocal
     }
 
     var usesGroqAPI: Bool {

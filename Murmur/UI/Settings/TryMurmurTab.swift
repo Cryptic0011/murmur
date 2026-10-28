@@ -1,5 +1,4 @@
 import AppKit
-import AVFoundation
 import SwiftUI
 
 struct TryMurmurTab: View {
@@ -9,7 +8,7 @@ struct TryMurmurTab: View {
 
     @State private var audioDevices: [AudioInputDevice] = []
     @StateObject private var micTest = MicTestController()
-    @State private var dictationRecorder = AudioRecorder()
+    @StateObject private var dictation = DictationTestRecorder()
     @State private var dictationTask: Task<Void, Never>?
     @State private var isRecordingDictation = false
     @State private var dictationStatus = "Record a short sample without pasting anywhere."
@@ -56,9 +55,7 @@ struct TryMurmurTab: View {
                     value: runtimeHealth.snapshot.microphoneGranted ? "Granted" : "Missing",
                     isReady: runtimeHealth.snapshot.microphoneGranted
                 ) {
-                    AVCaptureDevice.requestAccess(for: .audio) { _ in
-                        Task { @MainActor in runtimeHealth.refreshNow() }
-                    }
+                    PermissionHelper.requestMicrophone()
                 }
 
                 readinessRow(
@@ -66,8 +63,7 @@ struct TryMurmurTab: View {
                     value: runtimeHealth.snapshot.accessibilityGranted ? "Granted" : "Missing",
                     isReady: runtimeHealth.snapshot.accessibilityGranted
                 ) {
-                    _ = AccessibilityHelper.hasAccess(prompt: true)
-                    runtimeHealth.refreshNow()
+                    PermissionHelper.requestAccessibility()
                 }
 
                 readinessRow(
@@ -87,7 +83,10 @@ struct TryMurmurTab: View {
                 HStack(spacing: 10) {
                     LevelMeter(level: micTest.level, active: micTest.isRunning, width: 220)
                     Button(micTest.isRunning ? "Stop" : "Start Test") {
-                        micTest.toggle(preferredDeviceUID: settings.microphoneDeviceUID)
+                        micTest.toggle(
+                            preferredDeviceUID: settings.microphoneDeviceUID,
+                            avoidBluetoothInput: settings.preferBuiltInMicOverBluetooth
+                        )
                     }
                     .buttonStyle(.borderedProminent)
 
@@ -127,7 +126,7 @@ struct TryMurmurTab: View {
                             .frame(minHeight: 120)
                             .scrollContentBackground(.hidden)
                             .padding(8)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.05)))
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.murmurRowFill))
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -138,7 +137,7 @@ struct TryMurmurTab: View {
                             .font(.system(size: 13, weight: .medium, design: .rounded))
                             .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
                             .padding(12)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.05)))
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.murmurRowFill))
                             .textSelection(.enabled)
                     }
                 }
@@ -151,11 +150,15 @@ struct TryMurmurTab: View {
                     .disabled(cleanedPreview.isEmpty)
 
                     Button("Use Frontmost App Style") {
+                        // Murmur is frontmost here; targetApplication() resolves the app
+                        // whose window sits right behind Settings.
+                        let target = ContextDetector.targetApplication()
                         let detector = ContextDetector(
                             defaults: ContextDetector.builtinDefaults,
                             userOverrides: settings.appOverrides
                         )
-                        selectedStyle = detector.currentMode()
+                        selectedStyle = detector.mode(for: target?.bundleIdentifier)
+                        copyStatus = target?.localizedName.map { "Using \($0)'s style." } ?? "No app behind Murmur; using Prose."
                     }
 
                     if let copyStatus {
@@ -213,6 +216,13 @@ struct TryMurmurTab: View {
                             resultPill("Style", dictationResult.mode.displayName)
                         }
 
+                        if let note = dictationResult.note {
+                            Text(note)
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
                         HStack(alignment: .top, spacing: 14) {
                             resultBlock(title: "Raw Transcript", text: dictationResult.raw)
                             resultBlock(title: "Cleaned", text: dictationResult.cleaned)
@@ -235,15 +245,23 @@ struct TryMurmurTab: View {
                     .font(.system(size: 15, weight: .bold, design: .rounded))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.06)))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.murmurRowFill))
 
-                Text(runtimeHealth.snapshot.hotkeyPaused ? "Hotkey is paused." : "Hold the shortcut in any text field.")
+                Text(hotkeyHint)
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
 
                 Spacer()
             }
         }
+    }
+
+    private var hotkeyHint: String {
+        if runtimeHealth.snapshot.hotkeyPaused { return "Hotkey is paused." }
+        if runtimeHealth.snapshot.secureInputActive {
+            return "Secure input is on in another app (a password field or Secure Keyboard Entry), so the hotkey may not respond."
+        }
+        return settings.toggleMode ? "Tap the shortcut in any text field." : "Hold the shortcut in any text field."
     }
 
     private func readinessRow(
@@ -268,7 +286,7 @@ struct TryMurmurTab: View {
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.05)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.murmurRowFill))
     }
 
     private func refreshAudioDevices() {
@@ -283,10 +301,20 @@ struct TryMurmurTab: View {
         dictationStatus = "Recording..."
         isRecordingDictation = true
 
-        let recorder = dictationRecorder
+        let dictation = dictation
         dictationTask = Task { @MainActor in
             do {
-                try await recorder.start(maxSeconds: 15, preferredDeviceUID: settings.microphoneDeviceUID)
+                let session = try await dictation.recorder.start(
+                    maxSeconds: 15,
+                    preferredDeviceUID: settings.microphoneDeviceUID,
+                    avoidBluetoothInput: settings.preferBuiltInMicOverBluetooth
+                )
+                // Stopped or cancelled while the mic was starting: nobody else will stop it.
+                guard isRecordingDictation, !Task.isCancelled else {
+                    _ = await dictation.recorder.stop(session: session)
+                    return
+                }
+                dictation.session = session
             } catch {
                 dictationError = "Could not start recording: \(error.localizedDescription)"
                 dictationStatus = "Recording failed."
@@ -297,21 +325,32 @@ struct TryMurmurTab: View {
     }
 
     private func stopAndRunDictationTest() {
-        let recorder = dictationRecorder
+        let recorder = dictation.recorder
+        // Taken before any await, so a late cancel can't stop a newer test recording.
+        let session = dictation.session
+        dictation.session = nil
         let mode = selectedStyle
         let settings = settings
         dictationStatus = "Preparing test..."
         isRecordingDictation = false
 
         dictationTask = Task { @MainActor in
-            let samples = await recorder.stop()
+            let samples = await recorder.stop(session: session, tailMilliseconds: AudioRecorder.releaseTailMilliseconds)
             do {
-                let apiKey = (try? KeychainStore.groqAPIKey.get()) ?? ""
-                let providers = ProviderFactory.makeProviders(settings: settings, apiKey: apiKey)
+                // The runtime's own providers (every key, the already-loaded model) and the
+                // same per-dictation settings, so the test behaves like the hotkey.
+                let providers = AppServices.providers.providers(settings: settings)
                 let pipeline = DictationTestPipeline(
                     transcriber: providers.transcriber,
                     primary: providers.primaryCleanup,
-                    fallback: providers.fallbackCleanup
+                    fallback: providers.fallbackCleanup,
+                    options: .init(
+                        replacementRules: settings.replacementRules,
+                        vocabulary: settings.vocabularyTerms,
+                        fuzzyVocabulary: settings.fuzzyVocabularyCorrection,
+                        cleanupInstructions: settings.cleanupInstructions,
+                        llmCleanupWordThreshold: settings.llmCleanupWordThreshold
+                    )
                 )
                 let result = try await pipeline.run(samples: samples, sampleRate: 16_000, mode: mode) { stage in
                     await MainActor.run {
@@ -333,9 +372,11 @@ struct TryMurmurTab: View {
     private func cancelDictationTest() {
         dictationTask?.cancel()
         dictationTask = nil
-        let recorder = dictationRecorder
+        let recorder = dictation.recorder
+        let session = dictation.session
+        dictation.session = nil
         Task {
-            _ = await recorder.stop()
+            _ = await recorder.stop(session: session)
         }
         isRecordingDictation = false
     }
@@ -350,7 +391,7 @@ struct TryMurmurTab: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.05)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.murmurRowFill))
     }
 
     private func resultBlock(title: String, text: String) -> some View {
@@ -362,9 +403,17 @@ struct TryMurmurTab: View {
                 .font(.system(size: 13, weight: .medium, design: .rounded))
                 .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
                 .padding(12)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.05)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.murmurRowFill))
                 .textSelection(.enabled)
         }
     }
 
+}
+
+/// Owns the test recorder for the tab's lifetime: an @State initializer would allocate a
+/// new AudioRecorder (and AVAudioEngine) on every re-render.
+@MainActor
+private final class DictationTestRecorder: ObservableObject {
+    let recorder = AudioRecorder()
+    var session: AudioRecorder.Session?
 }

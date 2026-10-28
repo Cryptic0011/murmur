@@ -30,6 +30,9 @@ struct HotkeyShortcut: Codable, Equatable, Hashable, Sendable {
     var hasModifiers: Bool { !modifierFlags.isEmpty }
 
     static let `default` = HotkeyShortcut(keyCode: UInt16(kVK_RightOption), modifiers: .option)
+    // Saved side-agnostic "Command"/"Control"/"Shift" shortcuts (keyCode nil) stay
+    // side-agnostic: pinning them to one side would silently break whoever holds
+    // the other key. Chord abort drops their Cmd-C and capital-letter false starts.
 }
 
 struct MurmurHotkeyOption: Identifiable, Hashable, Sendable {
@@ -43,9 +46,9 @@ struct MurmurHotkeyOption: Identifiable, Hashable, Sendable {
 enum MurmurHotkeyCatalog {
     static let supportedOptions: [MurmurHotkeyOption] = [
         .init(shortcut: HotkeyShortcut(keyCode: UInt16(kVK_RightOption), modifiers: .option), label: "Right Option", symbol: "option"),
-        .init(shortcut: HotkeyShortcut(modifiers: .control), label: "Control", symbol: "control"),
-        .init(shortcut: HotkeyShortcut(modifiers: .command), label: "Command", symbol: "command"),
-        .init(shortcut: HotkeyShortcut(modifiers: .shift), label: "Shift", symbol: "shift"),
+        .init(shortcut: HotkeyShortcut(keyCode: UInt16(kVK_Control), modifiers: .control), label: "Left Control", symbol: "control"),
+        .init(shortcut: HotkeyShortcut(keyCode: UInt16(kVK_RightCommand), modifiers: .command), label: "Right Command", symbol: "command"),
+        .init(shortcut: HotkeyShortcut(keyCode: UInt16(kVK_RightShift), modifiers: .shift), label: "Right Shift", symbol: "shift"),
     ]
 
     static func normalizedModifiers(from flags: NSEvent.ModifierFlags) -> NSEvent.ModifierFlags {

@@ -1,31 +1,44 @@
 #!/bin/bash
-# Builds Murmur and installs it to /Applications with a stable ad-hoc signature
-# so TCC permissions (Mic, Accessibility) survive across rebuilds.
+# Builds a Debug Murmur and installs it to /Applications.
 #
-# Without this, Xcode's DerivedData rebuild generates a fresh cdhash on every
-# build, which TCC treats as a brand-new app — meaning permissions get re-prompted
-# every launch and your existing toggle in System Settings → Accessibility points
-# at a stale binary.
+# Debug builds are ad-hoc signed by Xcode (hardened runtime and entitlements as
+# set in project.yml). An ad-hoc signature's identity is its cdhash, which
+# changes on every build, so macOS treats each build as a new app: Mic and
+# Accessibility grants and Keychain access don't carry over. This script resets
+# Murmur's TCC entries so you re-grant once per run instead of chasing stale
+# entries in System Settings.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+DERIVED="$ROOT/build/DerivedData"
+BUILT="$DERIVED/Build/Products/Debug/Murmur.app"
+DEST="/Applications/Murmur.app"
+
+# Don't silently replace a notarized release install with a dev build.
+if [ -d "$DEST" ] && [ "${FORCE:-0}" != "1" ] &&
+   [[ "$(codesign -dvv "$DEST" 2>&1 || true)" == *"Authority=Developer ID Application"* ]]; then
+  echo "✗ $DEST is a Developer ID release build. Re-run with FORCE=1 to replace it."
+  exit 1
+fi
+
 echo "→ Regenerating Xcode project"
 xcodegen generate >/dev/null
 
 echo "→ Building Murmur"
-xcodebuild -scheme Murmur -destination 'platform=macOS' -configuration Debug build >/dev/null
+# A fixed DerivedData path means we install exactly what this run built, never
+# a stale product from another checkout. -quiet still prints errors.
+rm -rf "$BUILT"
+xcodebuild -quiet -scheme Murmur -destination 'platform=macOS' -configuration Debug \
+  -derivedDataPath "$DERIVED" build
 
-BUILT=$(find ~/Library/Developer/Xcode/DerivedData -type d -name "Murmur.app" -path "*Build/Products/Debug/*" -not -path "*Index.noindex*" | head -1)
-if [ -z "$BUILT" ]; then
-  echo "✗ Could not locate built Murmur.app"
+if [ ! -d "$BUILT" ]; then
+  echo "✗ Build finished but $BUILT is missing"
   exit 1
 fi
 echo "→ Built at: $BUILT"
-
-DEST="/Applications/Murmur.app"
 
 # Quit any running Murmur first
 osascript -e 'tell application "Murmur" to quit' 2>/dev/null || true
@@ -35,10 +48,6 @@ pkill -x Murmur 2>/dev/null || true
 echo "→ Installing to $DEST"
 rm -rf "$DEST"
 cp -R "$BUILT" "$DEST"
-
-# Re-sign with stable identifier so the cdhash is keyed off the bundle ID
-echo "→ Re-signing with stable identifier"
-codesign --force --deep --sign - --identifier com.murmur.Murmur "$DEST"
 
 echo "→ Resetting TCC for com.murmur.Murmur (so System Settings shows the fresh build)"
 tccutil reset Microphone com.murmur.Murmur 2>/dev/null || true
@@ -56,10 +65,11 @@ Murmur is now at /Applications/Murmur.app.
 The onboarding wizard will ask for Mic + Accessibility. Grant both.
 Because TCC was reset, any stale "Murmur" entry in System Settings →
 Accessibility has been cleared — you'll add the fresh /Applications
-copy when prompted.
+copy when prompted. macOS may also ask once per saved API key to let
+this build read it from the Keychain.
 
 To rebuild after code changes: run this script again. It will quit
-the running app, re-install, reset TCC, and relaunch — so you only
+the running app, re-install, reset TCC, and relaunch — so you
 re-grant once per script run, not once per launch.
 ────────────────────────────────────────────────────────────────────
 EOF

@@ -22,7 +22,7 @@ struct DictionaryTab: View {
                         .padding(8)
                         .background(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color.black.opacity(0.05))
+                                .fill(Color.murmurRowFill)
                         )
 
                     Text("Separate terms with commas or new lines, e.g. “Murmur, Groq, WhisperKit, Supabase”.")

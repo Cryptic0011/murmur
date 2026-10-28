@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Murmur
 
@@ -26,6 +27,13 @@ struct ContextDetectorTests {
         #expect(ContextDetector.builtinDefaults["com.apple.mail"] == .email)
         #expect(ContextDetector.builtinDefaults["com.tinyspeck.slackmacgap"] == .chat)
         #expect(ContextDetector.builtinDefaults["com.apple.Notes"] == .notes)
+        #expect(ContextDetector.builtinDefaults["md.obsidian"] == .notes)
+        #expect(ContextDetector.builtinDefaults["ru.keepcoder.Telegram"] == .chat)
+        #expect(ContextDetector.builtinDefaults["com.todesktop.230313mzl4w4u92"] == .code)
+        // Code style also keeps Murmur from flipping these into screen-reader mode.
+        #expect(ContextDetector.builtinDefaults["com.exafunction.windsurf"] == .code)
+        // Custom-drawn: AX shows no field, and no smart spacing in a shell.
+        #expect(ContextDetector.builtinDefaults["net.kovidgoyal.kitty"] == .light)
         #expect(ContextDetector.builtinDefaults["com.openai.chat"] == .prompt)
     }
 
@@ -39,5 +47,12 @@ struct ContextDetectorTests {
     func nilBundle() {
         let det = ContextDetector(defaults: [:], userOverrides: [])
         #expect(det.mode(for: nil) == .prose)
+    }
+
+    @MainActor
+    @Test("the dictation target is never Murmur itself")
+    func targetSkipsMurmur() {
+        let pid = ContextDetector.targetApplication()?.processIdentifier
+        #expect(pid != ProcessInfo.processInfo.processIdentifier)
     }
 }

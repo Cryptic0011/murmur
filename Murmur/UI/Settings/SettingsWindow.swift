@@ -52,10 +52,12 @@ enum SettingsTab: String, Hashable, CaseIterable {
 }
 
 @MainActor
-final class SettingsWindowController {
+final class SettingsWindowController: NSObject, NSWindowDelegate {
     static let windowTitle = "Murmur"
 
-    private var fallbackWindow: NSWindow?
+    private var window: NSWindow?
+    /// Where the user left the window, so a reopen (a fresh window) doesn't re-center.
+    private var lastFrame: NSRect?
     let settings: SettingsStore
     let history: HistoryStore
     let runtimeHealth = AppServices.runtimeHealth
@@ -65,22 +67,15 @@ final class SettingsWindowController {
     init(settings: SettingsStore, history: HistoryStore) {
         self.settings = settings
         self.history = history
+        super.init()
     }
 
     func show(initialTab: SettingsTab = .overview) {
         AppServices.router.selectedTab = initialTab
-        // Match the main WindowGroup window by title — "first titled window"
-        // could front an unrelated auxiliary window instead of settings.
-        if let window = NSApp.windows.first(where: {
-            !($0 is NSPanel) && $0.styleMask.contains(.titled) && $0.title == Self.windowTitle
-        }) {
+        // This controller owns the only settings window (MurmurApp declares no
+        // window scene), so reuse it rather than searching NSApp.windows.
+        if let window {
             window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        if let fallbackWindow {
-            fallbackWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -99,12 +94,28 @@ final class SettingsWindowController {
         let window = NSWindow(contentViewController: host)
         window.title = Self.windowTitle
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 860, height: 580))
-        window.center()
+        if let lastFrame {
+            window.setFrame(lastFrame, display: false)
+        } else {
+            window.setContentSize(NSSize(width: 860, height: 580))
+            window.center()
+        }
         window.isReleasedWhenClosed = false
-        fallbackWindow = window
+        window.delegate = self
+        self.window = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow, closing === window else { return }
+        // A closed window that stays alive keeps its SwiftUI tree too: no onDisappear
+        // (Mic Test and the dictation test keep the mic open) and no onAppear reload
+        // on reopen. Drop the tree after this notification, so CommitTextField's own
+        // willClose save runs first; the next show() builds a fresh window.
+        lastFrame = closing.frame
+        window = nil
+        DispatchQueue.main.async { closing.contentViewController = nil }
     }
 }
 
@@ -123,7 +134,8 @@ struct AppShellView: View {
             detail
         }
         .navigationSplitViewStyle(.balanced)
-        .background(MurmurBackdrop())
+        // No root backdrop: the sidebar and detail columns each draw one and
+        // cover it completely, so a third copy was pure blur cost.
     }
 
     private var sidebar: some View {
@@ -177,7 +189,7 @@ struct AppShellView: View {
 
                     switch router.selectedTab {
                     case .overview:
-                        OverviewTab(settings: settings, history: history, runtimeHealth: runtimeHealth, setup: setup)
+                        OverviewTab(settings: settings, history: history, runtimeHealth: runtimeHealth, setup: setup, updates: updates)
                     case .tryMurmur:
                         TryMurmurTab(settings: settings, runtimeHealth: runtimeHealth, setup: setup)
                     case .general:

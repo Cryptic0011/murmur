@@ -59,6 +59,14 @@ private struct OnboardingView: View {
 
     @State private var step = 0
     @State private var chosePrivate = true
+    @State private var groqKey = ""
+    @State private var hasSavedGroqKey = false
+    @State private var groqKeyError: String?
+
+    /// Groq cleanup without a key fails every dictation, so step 2 collects one.
+    private var needsGroqKey: Bool {
+        !chosePrivate && !hasSavedGroqKey && groqKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -105,9 +113,7 @@ private struct OnboardingView: View {
                 detail: "To hear your dictation.",
                 granted: runtimeHealth.snapshot.microphoneGranted
             ) {
-                AVCaptureDevice.requestAccess(for: .audio) { _ in
-                    Task { @MainActor in runtimeHealth.refreshNow() }
-                }
+                PermissionHelper.requestMicrophone()
             }
 
             permissionRow(
@@ -115,25 +121,19 @@ private struct OnboardingView: View {
                 detail: "To paste the finished text where you're typing.",
                 granted: runtimeHealth.snapshot.accessibilityGranted
             ) {
-                _ = AccessibilityHelper.hasAccess(prompt: true)
-                runtimeHealth.refreshNow()
+                PermissionHelper.requestAccessibility()
             }
 
             if !runtimeHealth.snapshot.accessibilityGranted {
-                Text("macOS opens Accessibility in System Settings → Privacy & Security. Flip the switch next to Murmur, then come back — no restart needed.")
+                Text("Murmur opens Accessibility in System Settings → Privacy & Security. Flip the switch next to Murmur, then come back — no restart needed. Already on but not detected? Remove Murmur from the list with −, then add it again.")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .task {
-            // Grants land while System Settings is frontmost — poll so the
-            // checkmarks flip without the user clicking anything here.
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                runtimeHealth.refreshNow()
-            }
-        }
+        // Grants land while System Settings is frontmost; RuntimeHealthStore's own
+        // 1.5 s permission poll flips the checkmarks. A second loop calling
+        // refreshNow() here reset its Ollama probe throttle every second.
     }
 
     private func permissionRow(
@@ -154,10 +154,12 @@ private struct OnboardingView: View {
             if !granted {
                 Button("Grant…", action: action)
                     .buttonStyle(.borderedProminent)
+                    .accessibilityLabel("Grant \(title) access")
             }
         }
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.05)))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.murmurRowFill))
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: Step 2 — cleanup choice
@@ -170,20 +172,64 @@ private struct OnboardingView: View {
                 badge: "Recommended",
                 detail: CleanupProviderOption.appleIntelligenceUsable
                     ? "Uses Apple Intelligence. Nothing to install, nothing leaves your Mac."
-                    : "Uses the free Ollama app. Murmur handles the install and downloads a small model automatically."
+                    : "Uses the free Ollama app — install it from ollama.com, and Murmur downloads a small model automatically."
             ) { chosePrivate = true }
 
             choiceCard(
                 selected: !chosePrivate,
                 title: "Fast — Groq cloud",
                 badge: nil,
-                detail: "Snappier cleanup via Groq's free API. Needs a free key from console.groq.com — Settings → Providers walks you through it."
+                detail: "Snappier cleanup via Groq's free API. Needs a free key from console.groq.com."
             ) { chosePrivate = false }
+
+            if !chosePrivate {
+                groqKeyField
+            }
 
             Text("Short dictations are cleaned instantly on-device either way, and you can change this anytime in Settings → Providers.")
                 .font(.system(size: 12, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear {
+            hasSavedGroqKey = !((try? KeychainStore.groqAPIKey.get()) ?? "").isEmpty
+        }
+    }
+
+    private var groqKeyField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                SecureField(hasSavedGroqKey ? "Groq key saved — paste to replace" : "Paste your Groq API key", text: $groqKey)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Groq API key")
+                Button("Get a Free Key") { AppServices.setup.openGroqKeys() }
+            }
+            if let groqKeyError {
+                Text(groqKeyError)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.red)
+            } else if needsGroqKey {
+                Text("Paste a key to continue, or choose Private.")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Saves a pasted key (trimmed — console copies often carry a newline).
+    /// Returns false when the Keychain write failed and onboarding must not advance.
+    private func saveGroqKey() -> Bool {
+        let trimmed = groqKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return hasSavedGroqKey }
+        do {
+            try KeychainStore.groqAPIKey.set(trimmed)
+            AppServices.apiKeys.reload() // a replaced key must not stay cached
+            hasSavedGroqKey = true
+            groqKeyError = nil
+            return true
+        } catch {
+            groqKeyError = "Couldn't save the key to Keychain: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -219,7 +265,7 @@ private struct OnboardingView: View {
             .padding(14)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(selected ? Color.accentColor.opacity(0.08) : Color.black.opacity(0.05))
+                    .fill(selected ? Color.accentColor.opacity(0.08) : Color.murmurRowFill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
@@ -227,6 +273,9 @@ private struct OnboardingView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityHint(detail)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     // MARK: Step 3 — try it
@@ -238,7 +287,7 @@ private struct OnboardingView: View {
                     .font(.system(size: 18, weight: .bold, design: .rounded))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.06)))
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.murmurRowFill))
                 Text(settings.toggleMode
                      ? "Tap to start, speak, tap again to paste."
                      : "Hold it down, speak, release to paste.")
@@ -280,6 +329,8 @@ private struct OnboardingView: View {
             Spacer()
             Button(step == 2 ? "Finish" : "Continue") {
                 if step == 1 {
+                    // Key first: the provider write rebuilds the pipeline, which reads it.
+                    if !chosePrivate, !saveGroqKey() { return }
                     settings.primaryCleanupProvider = chosePrivate
                         ? (CleanupProviderOption.appleIntelligenceUsable ? .appleFoundationModels : .ollamaLocal)
                         : .groqAPI
@@ -292,6 +343,7 @@ private struct OnboardingView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
+            .disabled(step == 1 && needsGroqKey)
         }
         .padding(20)
     }

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct AppOverridesTab: View {
     @ObservedObject var settings: SettingsStore
@@ -8,6 +9,7 @@ struct AppOverridesTab: View {
     @State private var runningAppChoices: [RunningAppChoice] = []
     @State private var selectedRunningBundleID: String?
     @State private var selectedNewMode: CleanupMode = .prose
+    @State private var confirmReset = false
     // NSWorkspace/Bundle lookups hit the disk; without a cache every table row
     // re-resolves its app name and icon on every render.
     @State private var appInfoCache: [String: (name: String, icon: NSImage?)] = [:]
@@ -15,7 +17,7 @@ struct AppOverridesTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             MurmurCard(title: "Per-App Cleanup Styles", subtitle: "Tune each app for email, chat, prompts, notes, code, or lighter cleanup.") {
-                Table(settings.appOverrides, selection: Binding(
+                Table(rows, selection: Binding(
                     get: { selectedID },
                     set: { selectedID = $0 }
                 )) {
@@ -30,16 +32,14 @@ struct AppOverridesTab: View {
                         }
                     }
                     TableColumn("Bundle ID", value: \.bundleID)
+                    TableColumn("Source") { row in
+                        Text(row.isBuiltIn ? "Default" : "Custom")
+                            .foregroundStyle(.secondary)
+                    }
                     TableColumn("Style") { row in
                         Picker("Cleanup style", selection: Binding(
                             get: { row.mode },
-                            set: { newMode in
-                                var arr = settings.appOverrides
-                                if let idx = arr.firstIndex(where: { $0.bundleID == row.bundleID }) {
-                                    arr[idx].mode = newMode
-                                    settings.appOverrides = arr
-                                }
-                            }
+                            set: { setMode($0, for: row.bundleID) }
                         )) {
                             ForEach(CleanupMode.allCases, id: \.self) { mode in
                                 Text(mode.displayName).tag(mode)
@@ -54,14 +54,21 @@ struct AppOverridesTab: View {
 
             HStack {
                 Button("Add Running App") { openRunningAppPicker() }
+                Button("Choose App…") { chooseApp() }
                 Button("Remove Selected") { removeSelected() }
-                    .disabled(selectedID == nil)
+                    .disabled(!hasCustomSelection)
                 Spacer()
-                Button("Reset to Defaults") {
-                    settings.appOverrides = []
-                    selectedID = nil
-                }
+                Button("Reset to Defaults") { confirmReset = true }
+                    .disabled(settings.appOverrides.isEmpty)
             }
+        }
+        .confirmationDialog("Remove all custom app styles?", isPresented: $confirmReset) {
+            Button("Reset to Defaults", role: .destructive) {
+                settings.appOverrides = []
+                selectedID = nil
+            }
+        } message: {
+            Text("Murmur's built-in styles stay in place.")
         }
         .sheet(isPresented: $showRunningAppPicker) {
             runningAppPicker
@@ -79,7 +86,7 @@ struct AppOverridesTab: View {
             }
 
             if runningAppChoices.isEmpty {
-                Text("No running apps without overrides were found.")
+                Text("No running apps without a style were found.")
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 140, alignment: .center)
@@ -137,21 +144,64 @@ struct AppOverridesTab: View {
 
     private func addSelectedRunningApp() {
         guard let selectedRunningBundleID else { return }
-        var arr = settings.appOverrides
-        if !arr.contains(where: { $0.bundleID == selectedRunningBundleID }) {
-            arr.append(.init(bundleID: selectedRunningBundleID, mode: selectedNewMode))
-        }
-        settings.appOverrides = arr
+        setMode(selectedNewMode, for: selectedRunningBundleID)
         selectedID = selectedRunningBundleID
         showRunningAppPicker = false
     }
 
+    /// Any installed app, including ones that aren't running.
+    private func chooseApp() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        guard panel.runModal() == .OK,
+              let url = panel.url,
+              let bundleID = Bundle(url: url)?.bundleIdentifier
+        else { return }
+        if !rows.contains(where: { $0.bundleID == bundleID }) {
+            setMode(.prose, for: bundleID)
+        }
+        selectedID = bundleID
+    }
+
+    /// Custom overrides first, then the built-in defaults they don't cover.
+    private var rows: [StyleRow] {
+        let custom = settings.appOverrides.map { StyleRow(bundleID: $0.bundleID, mode: $0.mode, isBuiltIn: false) }
+        let overridden = Set(settings.appOverrides.map(\.bundleID))
+        let builtIn = ContextDetector.builtinDefaults
+            .filter { !overridden.contains($0.key) }
+            .map { StyleRow(bundleID: $0.key, mode: $0.value, isBuiltIn: true) }
+            .sorted { displayName(for: $0.bundleID).localizedCaseInsensitiveCompare(displayName(for: $1.bundleID)) == .orderedAscending }
+        return custom + builtIn
+    }
+
+    private var hasCustomSelection: Bool {
+        guard let selectedID else { return false }
+        return settings.appOverrides.contains { $0.bundleID == selectedID }
+    }
+
+    /// Picking a built-in app's default style drops the override instead of
+    /// pinning a copy of it.
+    private func setMode(_ mode: CleanupMode, for bundleID: String) {
+        var arr = settings.appOverrides
+        arr.removeAll { $0.bundleID == bundleID }
+        if ContextDetector.builtinDefaults[bundleID] != mode {
+            arr.append(.init(bundleID: bundleID, mode: mode))
+        }
+        settings.appOverrides = arr
+    }
+
     private func loadRunningAppChoices() -> [RunningAppChoice] {
-        let existing = Set(settings.appOverrides.map(\.bundleID))
+        let existing = Set(rows.map(\.bundleID))
         var seen = Set<String>()
         return NSWorkspace.shared.runningApplications.compactMap { app in
-            guard app.activationPolicy == .regular,
+            // Accessory (menu-bar) apps can have text fields too.
+            guard app.activationPolicy != .prohibited,
                   let bundleID = app.bundleIdentifier,
+                  bundleID != Bundle.main.bundleIdentifier,
                   !existing.contains(bundleID),
                   seen.insert(bundleID).inserted
             else { return nil }
@@ -193,6 +243,14 @@ struct AppOverridesTab: View {
         let info = (name: name, icon: icon)
         DispatchQueue.main.async { appInfoCache[bundleID] = info }
         return info
+    }
+
+    private struct StyleRow: Identifiable {
+        var id: String { bundleID }
+        let bundleID: String
+        let mode: CleanupMode
+        /// Murmur's built-in default, not a user override.
+        let isBuiltIn: Bool
     }
 
     private struct RunningAppChoice: Identifiable {

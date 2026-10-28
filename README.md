@@ -16,22 +16,24 @@ Murmur is a macOS menu bar app for fast voice dictation. Hold your hotkey, speak
 
 - Menu bar dictation app for macOS
 - Push-to-talk hotkey with custom shortcut capture
-- Local transcription with WhisperKit
-- Optional local transcription with Apple Speech on supported macOS versions
-- Optional API transcription and cleanup with Groq
-- Optional cleanup with Cerebras, Ollama, or Apple Intelligence
+- Local transcription with WhisperKit or Parakeet (FluidAudio), or Apple Speech on macOS 26+
+- Optional cloud transcription with Groq (falls back to a downloaded WhisperKit model on failure)
+- Cleanup with Groq, Cerebras, any OpenAI-compatible endpoint, Ollama, Apple Intelligence (macOS 26+), or built-in rules only
+- Live hosted model lists and automatic recovery from retired models
+- Adjustable AI cleanup cutoff, recording sounds, and dictation capsule visibility
 - Per-app cleanup styles for prose, email, chat, notes, prompts, and code
 - Microphone picker and in-app dictation test flow
 - Visible runtime/setup state instead of silent failures
-- Automatic update checks against GitHub Releases
+- Signed Sparkle updates from GitHub Releases (checked every 12 hours)
+- Optional `murmur://` URL control for Shortcuts, Raycast, or Stream Deck (off by default)
 
 ## Privacy
 
 Murmur can run fully locally, but cloud providers receive audio or transcript
 content when you select them. API keys are stored in macOS Keychain, recorded
-audio is discarded after transcription, and local dictation history is off by
-default. See [PRIVACY.md](PRIVACY.md) for the complete data-flow and storage
-details.
+audio stays in memory and is never written to disk, and local dictation history
+is off by default. See [PRIVACY.md](PRIVACY.md) for the complete data-flow and
+storage details.
 
 ## Install
 
@@ -55,10 +57,13 @@ Install steps:
 
 Prerequisites:
 
-- macOS 14 or newer
-- Xcode
-- Homebrew
-- `xcodegen`
+- Xcode 26 or newer (the macOS 26 SDK is required for Apple Speech and
+  Apple Intelligence support), which needs macOS 15.6 or newer to run
+- Homebrew and `xcodegen`
+
+The built app runs on macOS 14 or newer. Dependency versions are locked in
+`Murmur.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`;
+Xcode resolves exactly those versions on a fresh clone.
 
 Setup:
 
@@ -81,6 +86,12 @@ For a local install flow that rebuilds and copies the app into `/Applications`, 
 ./scripts/install-dev.sh
 ```
 
+The script builds into `build/DerivedData`, stops on build errors, refuses to
+replace a Developer ID release install unless run with `FORCE=1`, and resets
+Murmur's Microphone and Accessibility permissions. Debug builds are ad-hoc
+signed, so macOS asks for those permissions (and Keychain access to saved API
+keys) again after each install.
+
 ## Prerequisites
 
 Murmur always needs:
@@ -91,9 +102,15 @@ Murmur always needs:
 
 Depending on how you configure providers, you may also need:
 
-- A Groq API key for Groq transcription or cleanup
-- Ollama installed locally for local cleanup with Gemma
-- WhisperKit model download for local transcription
+- A Groq, Cerebras, or custom endpoint API key for those providers
+- Ollama installed locally for Ollama cleanup
+- A one-time model download for WhisperKit or Parakeet
+
+Local speech models download on first use. WhisperKit models are stored in
+`~/Library/Application Support/Murmur/Models` (the model that older versions saved
+under `~/Documents/huggingface` is copied there once; the original is left for other
+WhisperKit tools). Parakeet models are
+stored by FluidAudio in `~/Library/Application Support/FluidAudio/Models`.
 
 ## First Run
 
@@ -116,17 +133,12 @@ Murmur supports several practical setups.
 
 ### Fully local
 
-- Transcription: WhisperKit
-- Cleanup: Ollama / Gemma
+- Transcription: WhisperKit, Parakeet, or Apple Speech (macOS 26+)
+- Cleanup: Built-in rules, Apple Intelligence (macOS 26+), or Ollama
 
-Use this if you want to avoid external API calls.
-
-You will need:
-
-- a WhisperKit model
-- Ollama installed and running on `localhost:11434`
-
-Download Ollama:
+Use this if you want to avoid external API calls. Built-in rules and Apple
+Intelligence need no extra install. Ollama must be installed and running on
+`localhost:11434`:
 
 ```text
 https://ollama.com/download/mac
@@ -134,17 +146,24 @@ https://ollama.com/download/mac
 
 ### Mixed
 
-- Transcription: WhisperKit
-- Cleanup: Groq, Cerebras, Ollama, or Apple Intelligence
+- Transcription: WhisperKit or Parakeet
+- Cleanup: Groq, Cerebras, or a custom OpenAI-compatible endpoint
 
 This is a good default if you want local speech-to-text but stronger cleanup options.
 
 ### API-backed
 
 - Transcription: Groq
-- Cleanup: Groq or Cerebras
+- Cleanup: Groq, Cerebras, or a custom endpoint
 
 Use this if you want to avoid local model setup and you are fine with API usage.
+
+### Custom endpoint
+
+Choose **Custom endpoint** for cleanup to use any OpenAI-compatible
+`/chat/completions` server (for example LM Studio or a hosted gateway). Remote
+endpoints must use HTTPS; plain HTTP is allowed only for `localhost`. The
+optional API key is stored in Keychain.
 
 ## Groq API Key Setup
 
@@ -168,10 +187,26 @@ https://console.groq.com/keys
 
 Notes:
 
-- Murmur stores the Groq key in the macOS keychain
+- Murmur stores the Groq key in the macOS keychain; surrounding whitespace is
+  trimmed, and saving an empty field removes the key
 - The same key is used for Groq transcription and Groq cleanup
 - If you do not use Groq in your provider settings, you do not need a key
 - If Groq is selected but no key is saved, the setup card shows an `Open Groq Keys` action that opens the Groq keys page
+
+Groq cleanup defaults to `openai/gpt-oss-20b`; Cerebras cleanup defaults to
+`gpt-oss-120b`. Saved retired Llama defaults migrate automatically. Use
+**Refresh Models** in Providers to choose from the provider's live catalog.
+A retired model error triggers one retry with an available replacement on the
+same provider; authentication and rate-limit errors do not switch models.
+
+Select **Built-in rules only** to clean up text without an AI model. The
+**AI cleanup minimum** controls how many words trigger AI cleanup (default 12;
+0 always uses the selected provider). General settings also let you disable
+recording sounds or the dictation capsule.
+
+When Groq transcription fails, Murmur uses the selected WhisperKit model if it
+is already downloaded. It does not download a fallback model during dictation.
+Selecting Groq still sends audio to Groq before attempting local fallback.
 
 ## Usage
 
@@ -185,6 +220,22 @@ Basic flow:
 
 If there is no editable field focused, Murmur shows the result state instead of silently failing.
 
+### URL control
+
+Murmur can be driven by other apps with `murmur://toggle`, `murmur://start`,
+`murmur://stop`, `murmur://cancel`, and `murmur://settings`. Because any app
+or web page can open these URLs, starting or stopping dictation by URL is off
+by default; turn on URL control in Settings to allow it.
+
+### History
+
+History is off by default. When enabled, the newest 50 dictations are saved
+to `~/Library/Application Support/Murmur/history.json`, readable only by your
+user account (permissions 0600). Turning history off stops saving new entries;
+use **Clear All** in Settings > History to delete saved ones. If the file
+becomes unreadable, Murmur moves it aside as `history.corrupt-<timestamp>.json`
+in the same folder and starts a new history.
+
 ## Updates
 
 Murmur uses Sparkle 2 to check a signed appcast hosted with GitHub Releases.
@@ -192,7 +243,8 @@ Murmur uses Sparkle 2 to check a signed appcast hosted with GitHub Releases.
 - New users install Murmur from the signed and notarized DMG
 - Existing users can download and install updates directly inside Murmur
 - Update archives are verified with Sparkle EdDSA signatures and Apple code signing
-- Automatic checks can be disabled in `Settings` > `About`
+- Murmur checks for updates every 12 hours; automatic checks can be disabled
+  in `Settings` > `About`
 
 Official public builds are Developer ID signed, notarized by Apple, and
 distributed with SHA-256 checksum files alongside the DMG and Sparkle appcast.

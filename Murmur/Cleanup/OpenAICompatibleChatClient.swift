@@ -9,6 +9,8 @@ struct OpenAICompatibleChatClient: Sendable {
     enum ClientError: Error {
         case badStatus(Int, message: String?)
         case decodeFailed
+        /// The model hit its token limit mid-output (finish_reason "length").
+        case truncated
     }
 
     let endpoint: URL
@@ -19,10 +21,14 @@ struct OpenAICompatibleChatClient: Sendable {
         model: String,
         temperature: Double,
         messages: [Message],
-        maxCompletionTokens: Int? = nil
+        maxCompletionTokens: Int? = nil,
+        reasoningEffort: String? = nil,
+        includeReasoning: Bool? = nil,
+        timeout: TimeInterval? = nil
     ) async throws -> String {
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
+        if let timeout { req.timeoutInterval = timeout }
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let bearerToken, !bearerToken.isEmpty {
             req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
@@ -33,17 +39,23 @@ struct OpenAICompatibleChatClient: Sendable {
             let temperature: Double
             let messages: [Message]
             let maxCompletionTokens: Int?
+            let reasoningEffort: String?
+            let includeReasoning: Bool?
 
             enum CodingKeys: String, CodingKey {
                 case model, temperature, messages
                 case maxCompletionTokens = "max_completion_tokens"
+                case reasoningEffort = "reasoning_effort"
+                case includeReasoning = "include_reasoning"
             }
         }
         let body = OpenAIBody(
             model: model,
             temperature: temperature,
             messages: messages,
-            maxCompletionTokens: maxCompletionTokens
+            maxCompletionTokens: maxCompletionTokens,
+            reasoningEffort: reasoningEffort,
+            includeReasoning: includeReasoning
         )
         req.httpBody = try JSONEncoder().encode(body)
 
@@ -58,10 +70,22 @@ struct OpenAICompatibleChatClient: Sendable {
             throw ClientError.badStatus(http.statusCode, message: message)
         }
 
-        struct Choice: Decodable { let message: Msg; struct Msg: Decodable { let content: String } }
+        struct Choice: Decodable {
+            struct Msg: Decodable { let content: String? } // null when reasoning ate the whole budget
+            let message: Msg?
+            let finishReason: String?
+            enum CodingKeys: String, CodingKey {
+                case message
+                case finishReason = "finish_reason"
+            }
+        }
         struct Wire: Decodable { let choices: [Choice] }
-        let wire = try JSONDecoder().decode(Wire.self, from: data)
-        guard let content = wire.choices.first?.message.content else { throw ClientError.decodeFailed }
+        guard let choice = (try? JSONDecoder().decode(Wire.self, from: data))?.choices.first else {
+            throw ClientError.decodeFailed
+        }
+        // A cut-off cleanup would paste the start of the dictation and silently drop the rest.
+        if choice.finishReason == "length" { throw ClientError.truncated }
+        guard let content = choice.message?.content, !content.isEmpty else { throw ClientError.decodeFailed }
         return content
     }
 }

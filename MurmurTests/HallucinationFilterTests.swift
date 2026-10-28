@@ -58,6 +58,44 @@ final class HallucinationFilterTests: XCTestCase {
         XCTAssertEqual(HallucinationFilter.speechSeconds(samples: quietNoise, sampleRate: 0), 0)
     }
 
+    private func tone(_ seconds: Double, amplitude: Float) -> [Float] {
+        (0..<Int(sampleRate * seconds)).map { Float(sin(Double($0) * 2 * .pi * 220 / sampleRate)) * amplitude }
+    }
+
+    func testKeepsQuietMicReplyThatClearsTheTrimmer() {
+        // A soft "Okay." at ~0.015 RMS: above SilenceTrimmer's 0.01 but below the old fixed 0.02.
+        let silence = [Float](repeating: 0, count: 2_400)
+        let samples = silence + tone(0.5, amplitude: 0.021) + silence
+        XCTAssertFalse(HallucinationFilter.isLikelyHallucination(
+            text: "Okay.", samples: samples, sampleRate: sampleRate
+        ))
+    }
+
+    func testDropsThankYouOnBreathThatClearsTheTrimmer() {
+        // A breath at the same ~0.015 RMS as the quiet "Okay." above: stock phrases keep the fixed 0.02 bar.
+        let silence = [Float](repeating: 0, count: 2_400)
+        let samples = silence + tone(0.5, amplitude: 0.021) + silence
+        XCTAssertTrue(HallucinationFilter.isLikelyHallucination(
+            text: "Thank you.", samples: samples, sampleRate: sampleRate
+        ))
+    }
+
+    func testNoisyRoomStillDropsPhraseOnNoiseOnly() {
+        // Fan noise above 0.01 everywhere: the adaptive level is capped at the old 0.02, not lowered to 0.01.
+        let noise = [Float](repeating: 0.015, count: 16_000)
+        XCTAssertTrue(HallucinationFilter.isLikelyHallucination(
+            text: "Thank you.", samples: noise, sampleRate: sampleRate
+        ))
+    }
+
+    func testNoiseFloorIsLowPercentile() {
+        let samples = [Float](repeating: 0.004, count: 3_200) + tone(1, amplitude: 0.3)
+        XCTAssertEqual(HallucinationFilter.noiseFloor(samples: samples, sampleRate: sampleRate), 0.004, accuracy: 0.0005)
+        XCTAssertEqual(HallucinationFilter.noiseFloor(samples: [], sampleRate: sampleRate), 0)
+        let threshold = HallucinationFilter.speechThreshold(samples: samples, sampleRate: sampleRate)
+        XCTAssertEqual(threshold, 0.012, accuracy: 0.0015)
+    }
+
     func testSpeechSecondsMeasuresActiveWindows() {
         var samples = [Float](repeating: 0, count: 8_000) // 0.5s silence
         samples += loudSpeechLikeAudio                     // 1s speech-level

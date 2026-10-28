@@ -5,17 +5,27 @@ import Foundation
 final class RecordingFeedbackPlayer {
     static let shared = RecordingFeedbackPlayer()
 
-    private var players: [AVAudioPlayer] = []
+    // Synthesized and prepared once, on first use; each chime just rewinds and plays.
+    private lazy var startPlayer = Self.makePlayer(from: 320, to: 410, duration: 0.055, noiseMix: 0.018)
+    private lazy var stopPlayer = Self.makePlayer(from: 360, to: 250, duration: 0.07, noiseMix: 0.012)
 
     func playStart() {
-        playTransient(from: 320, to: 410, duration: 0.055, noiseMix: 0.018)
+        play(startPlayer)
     }
 
     func playStop() {
-        playTransient(from: 360, to: 250, duration: 0.07, noiseMix: 0.012)
+        play(stopPlayer)
     }
 
-    private func playTransient(from startFrequency: Double, to endFrequency: Double, duration: TimeInterval, noiseMix: Double) {
+    private func play(_ player: AVAudioPlayer?) {
+        guard let player else { return }
+        player.currentTime = 0
+        player.play()
+    }
+
+    private static func makePlayer(
+        from startFrequency: Double, to endFrequency: Double, duration: TimeInterval, noiseMix: Double
+    ) -> AVAudioPlayer? {
         let sampleRate = 44_100.0
         let frameCount = Int(sampleRate * duration)
         var pcm = [Int16]()
@@ -37,38 +47,33 @@ final class RecordingFeedbackPlayer {
             pcm.append(value)
         }
 
-        guard let data = wavData(from: pcm, sampleRate: Int(sampleRate)) else { return }
-
         do {
-            let player = try AVAudioPlayer(data: data)
+            let player = try AVAudioPlayer(data: wavData(from: pcm, sampleRate: Int(sampleRate)))
             player.volume = 0.9
             player.prepareToPlay()
-            player.play()
-            players.append(player)
-            players.removeAll { !$0.isPlaying }
+            return player
         } catch {
-            return
+            return nil
         }
     }
 
-    private func wavData(from pcm: [Int16], sampleRate: Int) -> Data? {
+    private static func wavData(from pcm: [Int16], sampleRate: Int) -> Data {
         let bytesPerSample = 2
         let dataSize = pcm.count * bytesPerSample
         let chunkSize = 36 + dataSize
         var data = Data()
+        data.reserveCapacity(44 + dataSize)
 
         func appendString(_ string: String) {
             data.append(contentsOf: string.utf8)
         }
 
         func appendUInt32(_ value: UInt32) {
-            var value = value.littleEndian
-            data.append(Data(bytes: &value, count: MemoryLayout<UInt32>.size))
+            withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
         }
 
         func appendUInt16(_ value: UInt16) {
-            var value = value.littleEndian
-            data.append(Data(bytes: &value, count: MemoryLayout<UInt16>.size))
+            withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
         }
 
         appendString("RIFF")
@@ -85,11 +90,7 @@ final class RecordingFeedbackPlayer {
         appendString("data")
         appendUInt32(UInt32(dataSize))
 
-        pcm.forEach { sample in
-            var sample = sample.littleEndian
-            data.append(Data(bytes: &sample, count: MemoryLayout<Int16>.size))
-        }
-
+        pcm.map(\.littleEndian).withUnsafeBytes { data.append(contentsOf: $0) }
         return data
     }
 }

@@ -1,11 +1,14 @@
+import Foundation
 import Testing
 @testable import Murmur
 
-@Suite("KeychainStore")
-struct KeychainStoreTests {
-    let store = KeychainStore(service: "com.murmur.test", account: "test-key")
+/// Touches the real login keychain, so each instance uses its own test-only item
+/// and removes it afterwards; serialized so tests never race on the keychain.
+@Suite("KeychainStore", .serialized)
+final class KeychainStoreTests {
+    let store = KeychainStore(service: "com.murmur.tests.keychain", account: "test-\(UUID().uuidString)")
 
-    init() { try? store.delete() }
+    deinit { try? store.delete() }
 
     @Test("round-trips a value")
     func roundTrip() throws {
@@ -29,6 +32,22 @@ struct KeychainStoreTests {
     func deletion() throws {
         try store.set("transient")
         try store.delete()
+        #expect(try store.get() == nil)
+    }
+
+    @Test("trims whitespace and newlines on save")
+    func trimsOnSave() throws {
+        try store.set("  gsk_abc123\n")
+        #expect(try store.get() == "gsk_abc123")
+    }
+
+    @Test("saving an empty or blank value deletes the item")
+    func emptySaveDeletes() throws {
+        try store.set("kept")
+        try store.set("   \n")
+        #expect(try store.get() == nil)
+        // Deleting when nothing is stored is not an error.
+        try store.set("")
         #expect(try store.get() == nil)
     }
 }
